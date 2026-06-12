@@ -18,7 +18,7 @@ class PDController:
                  + feedforward_term
 
         # velocity mode
-        torque = feedback_gain * (kp * vel_err * TORQUE_DAMPING_SCALE)
+        torque = feedback_gain * (kd * vel_err)
                  + feedforward_term
 
     The ``TORQUE_DAMPING_SCALE`` factor matches the MuJoCo control callback.
@@ -35,14 +35,15 @@ class PDController:
         self.feedforward_term = np.zeros(num_joints, dtype=float)
         self.target_torque    = np.zeros(num_joints, dtype=float)
 
-    def compute_torque(self, observations: dict) -> np.ndarray:
-        """Compute the per-joint torque for the current observation."""
-        obs = observations["RBY1"]
-        pos_error = self.target_pos - obs["q"]
-        vel_error = self.target_vel - obs["dq"]
+    def compute_torque(self, curr_pos: np.ndarray, curr_vel: np.ndarray) -> np.ndarray:
+        """Compute the per-joint torque from the current joint state arrays."""
+        pos_error = self.target_pos - curr_pos
+        vel_error = self.target_vel - curr_vel
 
+        # Position PD result.
         torque_pos = self.kp * pos_error + self.kd * vel_error * TORQUE_DAMPING_SCALE
-        torque_vel = self.kp * vel_error * TORQUE_DAMPING_SCALE
+        # Velocity P result (matches the MuJoCo control callback).
+        torque_vel = self.kd * vel_error
 
         self.target_torque = (
             self.feedback_gain

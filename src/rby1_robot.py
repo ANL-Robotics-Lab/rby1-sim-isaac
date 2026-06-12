@@ -3,15 +3,34 @@
 """RBY1 articulation wrapper with PhysX joint/motor configuration."""
 from __future__ import annotations
 
+import re
 from typing import Optional, Sequence
 
 import carb
 import numpy as np
 import omni
-from isaacsim.core.prims import SingleArticulation
+from isaacsim.core.api.materials.physics_material import PhysicsMaterial
+from isaacsim.core.prims import GeometryPrim, SingleArticulation, SingleRigidPrim
 from pxr import PhysxSchema, Sdf, UsdPhysics
 
 from motor_profiles import get_profile_for_joint
+
+
+# Wheel collision geometry prim-path patterns per RBY1 model.
+WHEEL_COLLISION_PRIM_PATH_EXPRS = {
+    # "m": "/World/RBY1/wheel_.*_link/collisions/Roller_.*/Sphere_.*",
+    "m": "/World/RBY1/wheel_.*_link/Roller_.*/Sphere_.*",
+    "a": "/World/RBY1/wheel_.*/collisions/mesh_0/cylinder",
+}
+
+# Model-A only: extra base collision geometry that needs a frictionless material.
+MODEL_A_EXTRA_GEOMETRY_PRIM_PATH_EXPR = "/World/RBY1/base/collisions/mesh_.*/cylinder"
+MODEL_A_EXTRA_GEOMETRY_MATERIAL_CONFIG = {
+    "prim_path": "/World/Physics_Materials/model_a_extra_geometry_material",
+    "dynamic_friction": 0.0,
+    "static_friction": 0.0,
+    "restitution": 0.0,
+}
 
 
 class RBY1Robot(SingleArticulation):
@@ -23,8 +42,16 @@ class RBY1Robot(SingleArticulation):
         name: str = "rby1_robot",
         position: Optional[Sequence[float]] = None,
         orientation: Optional[Sequence[float]] = None,
+        robot_model: str = "m",
     ) -> None:
+        self.robot_model = str(robot_model).lower()
+        if self.robot_model not in WHEEL_COLLISION_PRIM_PATH_EXPRS:
+            valid_models = ", ".join(sorted(WHEEL_COLLISION_PRIM_PATH_EXPRS))
+            raise ValueError(
+                f"Unsupported RBY1 model '{robot_model}'. Valid models: {valid_models}"
+            )
         self.base_prim_path = prim_path + "/base"
+        self._base = None
         SingleArticulation.__init__(
             self,
             prim_path=prim_path,
@@ -33,12 +60,61 @@ class RBY1Robot(SingleArticulation):
             orientation=orientation,
             articulation_controller=None,
         )
+        self._torso_5 = None
+        self._ee_left = None
+        self._ee_right = None
 
     def post_reset(self) -> None:
         SingleArticulation.post_reset(self)
+        if self._torso_5 is not None:
+            self._torso_5.post_reset()
+        if self._ee_left is not None:
+            self._ee_left.post_reset()
+        if self._ee_right is not None:
+            self._ee_right.post_reset()
 
     def initialize(self, physics_sim_view: omni.physics.tensors.SimulationView = None) -> None:
         SingleArticulation.initialize(self, physics_sim_view=physics_sim_view)
+
+        # USD is fully spawned at initialize() time, so the rigid prims are safe to create.
+        self._torso_5 = SingleRigidPrim(
+            prim_path=self.prim_path + "/link_torso_5",
+            name=self.name + "_torso_5",
+        )
+        self._torso_5.initialize(physics_sim_view=physics_sim_view)
+
+        self._ee_left = SingleRigidPrim(
+            prim_path=self.prim_path + "/ee_left",
+            name=self.name + "_ee_left",
+        )
+        self._ee_left.initialize(physics_sim_view=physics_sim_view)
+
+        self._ee_right = SingleRigidPrim(
+            prim_path=self.prim_path + "/ee_right",
+            name=self.name + "_ee_right",
+        )
+        self._ee_right.initialize(physics_sim_view=physics_sim_view)
+
+    # ------------------------------------------------------------------
+    # Rigid-prim accessors
+    # ------------------------------------------------------------------
+
+    @property
+    def torso_5(self) -> SingleRigidPrim:
+        return self._torso_5
+
+    @property
+    def base(self) -> SingleRigidPrim:
+        return self._base
+
+    @property
+    def ee_left(self) -> SingleRigidPrim:
+        return self._ee_left
+
+    @property
+    def ee_right(self) -> SingleRigidPrim:
+        return self._ee_right
+
 
     # ------------------------------------------------------------------
     # PhysX property helpers
@@ -65,6 +141,33 @@ class RBY1Robot(SingleArticulation):
         self._set_float_attr(prim, f"{prefix}:dynamicFrictionEffort", profile["dynamic_effort"])
         self._set_float_attr(prim, f"{prefix}:viscousFrictionCoefficient", viscous)
 
+    def _apply_physics_material_to_geometry(
+        self,
+        stage,
+        prim_paths_expr: str,
+        geometry_name: str,
+        physics_material: PhysicsMaterial,
+    ) -> bool:
+        """Apply a physics material to every collision geometry matching a regex."""
+        if not prim_paths_expr:
+            return False
+
+        pattern = re.compile(f"^{prim_paths_expr}$")
+        match_count = sum(
+            1 for prim in stage.Traverse() if pattern.fullmatch(str(prim.GetPath()))
+        )
+        if match_count == 0:
+            carb.log_warn(f"[RBY1Robot] No geometry prims matched: {prim_paths_expr}")
+            return False
+
+        geometry_prims = GeometryPrim(
+            prim_paths_expr=prim_paths_expr,
+            name=geometry_name,
+            collisions=np.full(match_count, True, dtype=bool),
+        )
+        geometry_prims.apply_physics_materials(physics_material)
+        return True
+
     # ------------------------------------------------------------------
     # Public configuration entry points
     # ------------------------------------------------------------------
@@ -87,6 +190,30 @@ class RBY1Robot(SingleArticulation):
             rb_api.CreateAngularDampingAttr().Set(0.0)
             rb_api.CreateMaxLinearVelocityAttr().Set(200.0)
             rb_api.CreateMaxAngularVelocityAttr().Set(1000.0)
+
+        # Apply a high-friction physics material to the wheel collision geometry.
+        wheel_material = PhysicsMaterial(
+            prim_path="/World/Physics_Materials/wheel_material",
+            dynamic_friction=1.0,
+            static_friction=1.0,
+            restitution=0.0,
+        )
+        self._apply_physics_material_to_geometry(
+            stage=stage,
+            prim_paths_expr=WHEEL_COLLISION_PRIM_PATH_EXPRS[self.robot_model],
+            geometry_name="wheel_collisions",
+            physics_material=wheel_material,
+        )
+
+        # Model A has extra base collision geometry that needs a frictionless material.
+        if self.robot_model == "a" and MODEL_A_EXTRA_GEOMETRY_PRIM_PATH_EXPR:
+            model_a_extra_material = PhysicsMaterial(**MODEL_A_EXTRA_GEOMETRY_MATERIAL_CONFIG)
+            self._apply_physics_material_to_geometry(
+                stage=stage,
+                prim_paths_expr=MODEL_A_EXTRA_GEOMETRY_PRIM_PATH_EXPR,
+                geometry_name="model_a_extra_geometry",
+                physics_material=model_a_extra_material,
+            )
 
     def set_joint_properties(self, stage, stiffness: float = 5e4, damping: float = 1e2) -> None:
         """Apply PhysX/Drive properties to all revolute and prismatic joints in the stage."""
@@ -133,6 +260,68 @@ class RBY1Robot(SingleArticulation):
             drive.CreateDampingAttr().Set(0.0)
             self._apply_joint_motor_model(prim, joint_api, "angular", profile)
         else:
-            joint_api.CreateMaxJointVelocityAttr().Set(1000.0)
+            joint_api.CreateMaxJointVelocityAttr().Set(200.0)
             joint_api.CreateJointFrictionAttr().Set(0.0)
-            joint_api.CreateArmatureAttr().Set(0.0)
+            joint_api.CreateArmatureAttr().Set(0.1)
+
+    # ------------------------------------------------------------------
+    # Diagnostics
+    # ------------------------------------------------------------------
+
+    def get_joint_properties(self, stage) -> None:
+        """Print the current joint configuration for revolute and prismatic joints."""
+        for prim in stage.Traverse():
+            joint_path = prim.GetPath()
+            type_name = prim.GetTypeName()
+            if type_name == "PhysicsPrismaticJoint":
+                print(f"\n[INFO] Checking prismatic joint: {joint_path}")
+                joint = UsdPhysics.PrismaticJoint(prim)
+                print(f"  [Joint]    break_force        = {joint.GetBreakForceAttr().Get()}")
+                print(f"  [Joint]    break_torque       = {joint.GetBreakTorqueAttr().Get()}")
+                joint_api = PhysxSchema.PhysxJointAPI(prim)
+                print(f"  [Joint]    max_joint_velocity = {joint_api.GetMaxJointVelocityAttr().Get()}")
+                print(f"  [Joint]    joint_friction     = {joint_api.GetJointFrictionAttr().Get()}")
+                print(f"  [Joint]    armature           = {joint_api.GetArmatureAttr().Get()}")
+                if prim.HasAPI(UsdPhysics.DriveAPI):
+                    drive = UsdPhysics.DriveAPI(prim, "linear")
+                    print(f"  [Drive]    stiffness          = {drive.GetStiffnessAttr().Get()}")
+                    print(f"  [Drive]    damping            = {drive.GetDampingAttr().Get()}")
+                    print(f"  [Drive]    target_position    = {drive.GetTargetPositionAttr().Get()}")
+                    print(f"  [Drive]    target_velocity    = {drive.GetTargetVelocityAttr().Get()}")
+                continue
+            if type_name != "PhysicsRevoluteJoint":
+                continue
+
+            print(f"\n[INFO] Checking revolute joint: {joint_path}")
+            joint = UsdPhysics.RevoluteJoint(prim)
+            print(f"  [Joint]    break_force        = {joint.GetBreakForceAttr().Get()}")
+            print(f"  [Joint]    break_torque       = {joint.GetBreakTorqueAttr().Get()}")
+
+            joint_api = PhysxSchema.PhysxJointAPI(prim)
+            print(f"  [Joint]    max_joint_velocity = {joint_api.GetMaxJointVelocityAttr().Get()}")
+            print(f"  [Joint]    joint_friction     = {joint_api.GetJointFrictionAttr().Get()}")
+            print(f"  [Joint]    armature           = {joint_api.GetArmatureAttr().Get()}")
+
+            axis_prefix = "physxJointAxis:angular"
+            static_friction = prim.GetAttribute(f"{axis_prefix}:staticFrictionEffort")
+            dynamic_friction = prim.GetAttribute(f"{axis_prefix}:dynamicFrictionEffort")
+            viscous_friction = prim.GetAttribute(f"{axis_prefix}:viscousFrictionCoefficient")
+            if static_friction and dynamic_friction and viscous_friction:
+                print(f"  [Axis]     static_friction    = {static_friction.Get()}")
+                print(f"  [Axis]     dynamic_friction   = {dynamic_friction.Get()}")
+                print(f"  [Axis]     viscous_friction   = {viscous_friction.Get()}")
+            else:
+                print("  [Axis]     friction properties = Not applied.")
+
+            if prim.HasAPI(UsdPhysics.DriveAPI):
+                drive = UsdPhysics.DriveAPI(prim, "angular")
+                print(f"  [Drive]    stiffness          = {drive.GetStiffnessAttr().Get()}")
+                print(f"  [Drive]    damping            = {drive.GetDampingAttr().Get()}")
+
+    def debug_stage_prims(self, stage) -> None:
+        """Traverse the stage and print each prim's type and applied APIs."""
+        print("[INFO] Traversing stage and listing prim details...\n")
+        for prim in stage.Traverse():
+            print(f"[DEBUG] Prim: {prim.GetPath()}")
+            print(f"        Type: {prim.GetTypeName()}")
+            print(f"        Applied APIs: {prim.GetAppliedSchemas()}\n")

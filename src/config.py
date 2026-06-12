@@ -18,7 +18,7 @@ import numpy as np
 # ============================================================
 
 PHYSICS_HZ: Final[float] = 500.0
-RENDER_HZ: Final[float] = 60.0
+RENDER_HZ: Final[float] = 30.0
 
 PHYSICS_DT: Final[float] = 1.0 / PHYSICS_HZ
 RENDER_DT: Final[float] = 1.0 / RENDER_HZ

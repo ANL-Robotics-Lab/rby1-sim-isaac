@@ -38,6 +38,18 @@ Currently only the following image is supported:
 |-----|-------|
 | `0.10.7-a_v1.2` | Model A v1.2 |
 
+## Robot model selection (`simulation.py`)
+
+The simulator supports both RBY1 models. The USD asset is loaded automatically
+based on the selected model (`assets/model_v_1_2_m_rev.usd` or `assets/model_v_1_2_a.usd`),
+or from `RBY1_USD_PATH` if set.
+
+```bash
+cd src
+python3 simulation.py            # Model M (default)
+python3 simulation.py --model a  # Model A
+```
+
 ## Docker image tag convention
 
 ```
