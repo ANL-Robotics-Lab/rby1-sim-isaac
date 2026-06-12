@@ -3,6 +3,7 @@
 """Top-level Isaac Sim entry point for the RBY1 simulator."""
 from __future__ import annotations
 
+import os
 import time
 
 import numpy as np
@@ -362,8 +363,12 @@ def _build_argparser():
     import argparse
 
     p = argparse.ArgumentParser(description="RBY1 Isaac Sim Simulation")
-    p.add_argument("--model", type=str.lower, choices=("m", "a"), default="m",
-                   help="RBY1 model selection: m or a")
+    # Default model comes from the ROBOT_MODEL_NAME env var that the per-model
+    # image sets (A/M -> a/m), so the a/m images each load their own USD asset
+    # without requiring an explicit --model flag. Can still be overridden.
+    default_model = os.environ.get("ROBOT_MODEL_NAME", "m").strip().lower() or "m"
+    p.add_argument("--model", type=str.lower, choices=("m", "a"), default=default_model,
+                   help="RBY1 model selection: m or a (default from ROBOT_MODEL_NAME env)")
     p.add_argument("--state-ip", default=ROBOT_STATE_HOST,
                    help="Target IP for RobotState transmission")
     p.add_argument("--state-port", type=int, default=ROBOT_STATE_PORT,
