@@ -29,6 +29,7 @@ class Simulation:
     def __init__(
         self,
         sim_app,
+        use_udp: bool = False,
         udp_state_send_ip: str = ROBOT_STATE_HOST,
         udp_state_send_port: int = ROBOT_STATE_PORT,
         udp_cmd_recv_port: int = ROBOT_CMD_PORT,
@@ -50,26 +51,30 @@ class Simulation:
         self._rendering_dt = RENDER_DT
         self._last_render_wall_time = 0.0
 
-        # Robot UDP bridge (always on — the SDK driver lives outside the sim process).
-        self.udp_bridge = RBY1UdpBridge(
-            state_send_ip=udp_state_send_ip,
-            state_send_port=udp_state_send_port,
-            cmd_recv_port=udp_cmd_recv_port,
-        )
+        # Robot UDP bridge is enabled only in rby1-sdk integration mode (--udp).
+        # In standalone mode this stays None, so RBY1Task uses its built-in trajectory.
+        self.udp_bridge = None
+        if use_udp:
+            self.udp_bridge = RBY1UdpBridge(
+                state_send_ip=udp_state_send_ip,
+                state_send_port=udp_state_send_port,
+                cmd_recv_port=udp_cmd_recv_port,
+            )
 
         # Optional gRPC client to the C++ app_main (used to reset the C++ ControlManager).
         self.grpc_robot = None
-        try:
-            from rby1_sdk import create_robot
-            robot = create_robot("127.0.0.1:50051", self.robot_model)
-            if robot.connect():
-                self.grpc_robot = robot
-                print("[Simulation] Connected to C++ app_main gRPC server at 127.0.0.1:50051")
-            else:
-                print("[Simulation] gRPC client created, but failed to connect to 127.0.0.1:50051 "
-                      "(server may not be running)")
-        except Exception as exc:
-            print(f"[Simulation] gRPC client unavailable: {exc}")
+        if use_udp:
+            try:
+                from rby1_sdk import create_robot
+                robot = create_robot("127.0.0.1:50051", self.robot_model)
+                if robot.connect():
+                    self.grpc_robot = robot
+                    print("[Simulation] Connected to C++ app_main gRPC server at 127.0.0.1:50051")
+                else:
+                    print("[Simulation] gRPC client created, but failed to connect to 127.0.0.1:50051 "
+                          "(server may not be running)")
+            except Exception as exc:
+                print(f"[Simulation] gRPC client unavailable: {exc}")
 
         # Gripper sim bridge (optional).
         self.gripper_server = None
@@ -369,6 +374,8 @@ def _build_argparser():
     default_model = os.environ.get("ROBOT_MODEL_NAME", "m").strip().lower() or "m"
     p.add_argument("--model", type=str.lower, choices=("m", "a"), default=default_model,
                    help="RBY1 model selection: m or a (default from ROBOT_MODEL_NAME env)")
+    p.add_argument("--udp", action="store_true",
+               help="Enable rby1-sdk UDP bridge")
     p.add_argument("--state-ip", default=ROBOT_STATE_HOST,
                    help="Target IP for RobotState transmission")
     p.add_argument("--state-port", type=int, default=ROBOT_STATE_PORT,
@@ -399,6 +406,7 @@ def main() -> None:
 
     simulation = Simulation(
         simulation_app,
+        use_udp=args.udp,
         udp_state_send_ip=args.state_ip,
         udp_state_send_port=args.state_port,
         udp_cmd_recv_port=args.cmd_port,
@@ -410,7 +418,10 @@ def main() -> None:
     )
     simulation.initial_reset()
 
-    mode = f"model={args.model}, UDP(→ {args.state_ip}:{args.state_port}, ← :{args.cmd_port})"
+    if args.udp:
+        mode = f"model={args.model}, UDP(-> {args.state_ip}:{args.state_port}, <- :{args.cmd_port})"
+    else:
+        mode = f"model={args.model}, standalone"
     if sim_gripper_enabled:
         mode += (f" + SimGripper(cmd←:{args.gripper_cmd_port}, "
                  f"state→{args.gripper_state_ip}:{args.gripper_state_port})")

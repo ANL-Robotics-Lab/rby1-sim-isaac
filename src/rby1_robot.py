@@ -18,7 +18,6 @@ from motor_profiles import get_profile_for_joint
 
 # Wheel collision geometry prim-path patterns per RBY1 model.
 WHEEL_COLLISION_PRIM_PATH_EXPRS = {
-    # "m": "/World/RBY1/wheel_.*_link/collisions/Roller_.*/Sphere_.*",
     "m": "/World/RBY1/wheel_.*_link/Roller_.*/Sphere_.*",
     "a": "/World/RBY1/wheel_.*/collisions/mesh_0/cylinder",
 }
@@ -27,8 +26,8 @@ WHEEL_COLLISION_PRIM_PATH_EXPRS = {
 MODEL_A_EXTRA_GEOMETRY_PRIM_PATH_EXPR = "/World/RBY1/base/collisions/mesh_.*/cylinder"
 MODEL_A_EXTRA_GEOMETRY_MATERIAL_CONFIG = {
     "prim_path": "/World/Physics_Materials/model_a_extra_geometry_material",
-    "dynamic_friction": 0.0,
-    "static_friction": 0.0,
+    "dynamic_friction": 0.3,
+    "static_friction": 0.3,
     "restitution": 0.0,
 }
 
@@ -194,8 +193,8 @@ class RBY1Robot(SingleArticulation):
         # Apply a high-friction physics material to the wheel collision geometry.
         wheel_material = PhysicsMaterial(
             prim_path="/World/Physics_Materials/wheel_material",
-            dynamic_friction=1.0,
-            static_friction=1.0,
+            dynamic_friction=1.2,
+            static_friction=1.2,
             restitution=0.0,
         )
         self._apply_physics_material_to_geometry(

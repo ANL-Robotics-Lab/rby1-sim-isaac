@@ -22,6 +22,12 @@ cd rby1-sim-isaac
 
 ### 2. Run
 
+
+| Script | Robot control | Robot UDP bridge | `app_main isaac` |
+|--------|---------------|------------------|------------------|
+| `docker/run.sh` | Built-in standalone PD trajectory | Disabled by default | Not started |
+| `docker/run_sdk.sh` | rby1-sdk / rby1 core commands | Enabled via `--udp` | Started automatically |
+
 #### rby1-sdk UDP integration mode
 
 Connects rby1-sdk with the Isaac Sim container to enable robot control via rby1 core.
@@ -29,6 +35,15 @@ Connects rby1-sdk with the Isaac Sim container to enable robot control via rby1 
 ```bash
 ./docker/run_sdk.sh --image 0.10.7-a_v1.2   # Model A v1.2
 ./docker/run_sdk.sh --image 0.10.7-m_v1.2   # Model M v1.2
+```
+
+#### Standalone mode
+
+Runs Isaac Sim only. The robot is controlled by the built-in PD trajectory in `RBY1Task`; no `app_main` process is started and the robot command/state UDP bridge is disabled.
+
+```bash
+./docker/run.sh --image 0.10.7-a_v1.2   # Model A v1.2
+./docker/run.sh --image 0.10.7-m_v1.2   # Model M v1.2
 ```
 
 ## Supported images
@@ -42,18 +57,6 @@ flag is required.
 | `0.10.7-a_v1.2` | Model A v1.2 |
 | `0.10.7-m_v1.2` | Model M v1.2 |
 
-## Robot model selection (`simulation.py`)
-
-The simulator supports both RBY1 models. The USD asset is loaded automatically
-based on the selected model (`assets/model_v_1_2_m_rev.usd` or `assets/model_v_1_2_a.usd`),
-or from `RBY1_USD_PATH` if set.
-
-```bash
-cd src
-python3 simulation.py            # Model M (default)
-python3 simulation.py --model a  # Model A
-```
-
 ## Docker image tag convention
 
 ```
@@ -63,9 +66,10 @@ e.g.) rainbowroboticsofficial/rby1-sim-isaac:0.10.7-a_v1.2   # Model A v1.2
       rainbowroboticsofficial/rby1-sim-isaac:0.10.7-m_v1.3   # Model M v1.3
 ```
 
-## UDP ports (rby1-sdk integration)
+## UDP ports
 
 Since `--network=host` is used, the host and container share the same network namespace.
+Ports `5005/5006` are used by rby1-sdk integration mode; ports `5007/5008` are used by the sim gripper bridge.
 
 | Port | Direction | Description |
 |------|-----------|-------------|
