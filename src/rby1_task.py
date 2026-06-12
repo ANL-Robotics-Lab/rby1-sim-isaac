@@ -95,13 +95,18 @@ def normalize_robot_model(robot_model: str) -> str:
 def _resolve_usd_path(usd_file_name: str) -> str:
     """Locate the RBY1 USD asset for the selected model.
 
-    Priority:
-      1. ``RBY1_USD_PATH`` environment variable
-      2. ``<repo>/assets/<model usd>``
-      3. ``<src/>/<model usd>`` (legacy fallback)
+    Resolution order:
+      1. ``RBY1_USD_PATH`` env var pointing to a directory -> ``<dir>/<model usd>``
+         (keeps per-model auto-selection when an external asset dir is supplied)
+      2. ``RBY1_USD_PATH`` env var pointing to a file -> used as-is
+         (single-asset override; bypasses per-model selection)
+      3. ``<repo>/assets/<model usd>``
+      4. ``<src/>/<model usd>`` (legacy fallback)
     """
     env_path = os.environ.get("RBY1_USD_PATH")
     if env_path:
+        if os.path.isdir(env_path):
+            return os.path.join(env_path, usd_file_name)
         return env_path
     src_dir = os.path.dirname(os.path.abspath(__file__))
     repo_assets = os.path.join(os.path.dirname(src_dir), "assets", usd_file_name)

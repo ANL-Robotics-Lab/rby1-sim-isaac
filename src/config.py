@@ -24,25 +24,8 @@ PHYSICS_DT: Final[float] = 1.0 / PHYSICS_HZ
 RENDER_DT: Final[float] = 1.0 / RENDER_HZ
 STAGE_UNITS_IN_METERS: Final[float] = 1.0
 
-USD_FILE_NAME: Final[str] = "rby1a_flatten.usd"
-
-
-def resolve_usd_path() -> str:
-    """Locate the RBY1 USD asset.
-
-    Priority:
-      1. ``RBY1_USD_PATH`` environment variable (absolute path)
-      2. ``<repo>/assets/<USD_FILE_NAME>``
-      3. ``<src/>/<USD_FILE_NAME>`` (legacy fallback)
-    """
-    env_path = os.environ.get("RBY1_USD_PATH")
-    if env_path:
-        return env_path
-    src_dir = os.path.dirname(os.path.abspath(__file__))
-    repo_assets = os.path.join(os.path.dirname(src_dir), "assets", USD_FILE_NAME)
-    if os.path.isfile(repo_assets):
-        return repo_assets
-    return os.path.join(src_dir, USD_FILE_NAME)
+# Note: the RBY1 USD asset is selected automatically per robot model.
+# See ``RBY1_MODEL_CONFIGS`` and ``_resolve_usd_path`` in ``rby1_task.py``.
 
 
 # ============================================================
