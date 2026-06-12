@@ -27,16 +27,20 @@ cd rby1-sim-isaac
 Connects rby1-sdk with the Isaac Sim container to enable robot control via rby1 core.
 
 ```bash
-./docker/run_sdk.sh --image 0.10.7-a_v1.2
+./docker/run_sdk.sh --image 0.10.7-a_v1.2   # Model A v1.2
+./docker/run_sdk.sh --image 0.10.7-m_v1.2   # Model M v1.2
 ```
 
 ## Supported images
 
-Currently only the following image is supported:
+The following images are currently supported. Each image automatically loads the
+USD asset matching its model (via the `ROBOT_MODEL_NAME` env var), so no extra
+flag is required.
 
 | Tag | Model |
 |-----|-------|
 | `0.10.7-a_v1.2` | Model A v1.2 |
+| `0.10.7-m_v1.2` | Model M v1.2 |
 
 ## Robot model selection (`simulation.py`)
 
