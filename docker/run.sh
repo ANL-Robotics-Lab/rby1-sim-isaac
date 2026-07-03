@@ -4,15 +4,17 @@
 # - RBY1 robot is automatically spawned and operated via internal PD control
 #
 # Usage:
-#   ./docker/run.sh                       # standalone + sim-gripper (default)
+#   ./docker/run.sh                       # standalone, no gripper (default)
 #   ./docker/run.sh --image 0.10.7-a_v1.2
 #   ./docker/run.sh --image rainbowroboticsofficial/rby1-sim-isaac:0.10.7-a_v1.2
-#   SIM_GRIPPER=0 ./docker/run.sh         # disable sim-gripper
-#   ./docker/run.sh --no-sim-gripper      # same (argument style)
+#   ./docker/run.sh --gripper --gripper-name rb_gripper
+#   ./docker/run.sh --gripper --no-sim-gripper
+#   GRIPPER_NAME=rb_gripper ./docker/run.sh
 #
 # Optional environment variables:
 #   IMAGE_NAME       docker image (default: rby1-sim-isaac:latest)
 #   CONTAINER_NAME   container name (default: rby1-sim-isaac)
+#   GRIPPER_NAME     default gripper folder under assets/gripper; overridden by --gripper-name
 #   RBY1_ISAAC_DIR   path to rby1-sim-isaac repo (containing src/, assets/).
 #                    If unset, the repo root (../) relative to this script is used.
 #
@@ -108,13 +110,39 @@ if [[ $_IMAGE_EXPLICIT -eq 0 && -z "${_IMAGE_NAME_ENV}" ]]; then
     echo "[run]                     IMAGE_NAME=<TAG> ./docker/run.sh" >&2
 fi
 
-# Enable sim-gripper bridge by default (SDK Gripper class drives the sim gripper via UDP).
+_has_arg() { local n="$1"; shift; for a in "$@"; do [[ "$a" == "$n" ]] && return 0; done; return 1; }
+_has_arg_with_value() {
+    local n="$1"
+    shift
+    for a in "$@"; do
+        [[ "$a" == "$n" || "$a" == "$n="* ]] && return 0
+    done
+    return 1
+}
+
+if [[ -n "${GRIPPER_NAME:-}" ]] \
+   && ! _has_arg_with_value "--gripper-name" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" \
+   && ! _has_arg "--no-gripper" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"; then
+    EXTRA_ARGS+=("--gripper-name" "${GRIPPER_NAME}")
+    echo "[run] gripper asset selected from GRIPPER_NAME=${GRIPPER_NAME}"
+fi
+
+# Passing a gripper name through this runner is treated as a request to load a gripper.
+if _has_arg_with_value "--gripper-name" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" \
+   && ! _has_arg "--gripper" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}" \
+   && ! _has_arg "--no-gripper" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"; then
+    EXTRA_ARGS=("--gripper" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}")
+    echo "[run] gripper enabled because --gripper-name was provided"
+fi
+
+# Enable sim-gripper bridge by default only when a gripper is loaded.
 # To disable, set SIM_GRIPPER=0 environment variable.
 # If the user explicitly passed --sim-gripper / --no-sim-gripper, respect that.
-_has_arg() { local n="$1"; shift; for a in "$@"; do [[ "$a" == "$n" ]] && return 0; done; return 1; }
 if [[ "${SIM_GRIPPER:-1}" != "0" ]] \
+   && _has_arg "--gripper" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"\
    && ! _has_arg "--sim-gripper" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"\
-   && ! _has_arg "--no-sim-gripper" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"; then
+   && ! _has_arg "--no-sim-gripper" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"\
+   && ! _has_arg "--no-gripper" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"; then
     EXTRA_ARGS=("--sim-gripper" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}") 
     echo "[run] sim-gripper bridge enabled by default (disable with: SIM_GRIPPER=0)"
 fi

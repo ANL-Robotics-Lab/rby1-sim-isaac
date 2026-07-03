@@ -23,6 +23,17 @@ from config import (
 )
 
 
+def _read_nonnegative_float_env(name: str, default: float) -> float:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        print(f"[Simulation] Invalid {name}={value!r}; using {default}.")
+        return default
+
+
 class Simulation:
     """Owns the Isaac Sim ``World`` and the optional UDP bridges."""
 
@@ -38,6 +49,8 @@ class Simulation:
         sim_gripper_state_host: str = GRIPPER_HOST,
         sim_gripper_state_port: int = GRIPPER_STATE_PORT,
         robot_model: str = "m",
+        gripper_enabled: bool = False,
+        gripper_name: str = "rb_gripper",
     ):
         # Imports kept lazy: many of these depend on SimulationApp being initialised.
         from isaacsim.core.api import World
@@ -47,9 +60,14 @@ class Simulation:
 
         self.simulator = sim_app
         self.robot_model = normalize_robot_model(robot_model)
+        self.gripper_name = gripper_name
         self._physics_dt = PHYSICS_DT
         self._rendering_dt = RENDER_DT
         self._last_render_wall_time = 0.0
+        self._grpc_reset_settle_seconds = _read_nonnegative_float_env(
+            "RBY1_GRPC_RESET_SETTLE_SECONDS",
+            0.5,
+        )
 
         # Robot UDP bridge is enabled only in rby1-sdk integration mode (--udp).
         # In standalone mode this stays None, so RBY1Task uses its built-in trajectory.
@@ -76,16 +94,20 @@ class Simulation:
             except Exception as exc:
                 print(f"[Simulation] gRPC client unavailable: {exc}")
 
-        # Gripper sim bridge (optional).
+        self.gripper_enabled = gripper_enabled
+
+        # Gripper command/state server (optional).
         self.gripper_server = None
-        if use_sim_gripper:
-            from sim_gripper_bridge import SimGripperServer
-            self.gripper_server = SimGripperServer(
+        if self.gripper_enabled:
+            from gripper_servers import create_gripper_server
+            self.gripper_server = create_gripper_server(
+                self.gripper_name,
                 cmd_bind_port=sim_gripper_cmd_port,
                 state_send_host=sim_gripper_state_host,
                 state_send_port=sim_gripper_state_port,
             )
-            self.gripper_server.start()
+            if use_sim_gripper:
+                self.gripper_server.start()
 
         self.world = World(
             physics_dt=PHYSICS_DT,
@@ -101,6 +123,8 @@ class Simulation:
         self.task = RBY1Task(
             udp_bridge=self.udp_bridge,
             robot_model=self.robot_model,
+            gripper_enabled=self.gripper_enabled,
+            gripper_name=self.gripper_name,
             gripper_server=self.gripper_server,
         )
         self.world.add_task(self.task)
@@ -175,6 +199,12 @@ class Simulation:
                     self.grpc_robot.disable_control_manager()
                     self.grpc_robot.power_off(".*")
                     print("[Simulation] gRPC: Control Manager disabled and powered off.")
+                    if self._grpc_reset_settle_seconds > 0.0:
+                        print(
+                            "[Simulation] Waiting "
+                            f"{self._grpc_reset_settle_seconds:.3f}s for gRPC reset to settle."
+                        )
+                        time.sleep(self._grpc_reset_settle_seconds)
                 else:
                     print("[Simulation] gRPC robot not connected. Skipping C++ reset commands.")
             except Exception as exc:
@@ -230,18 +260,18 @@ class ExternalForceUI:
         self.ui = ui
         self.window = ui.Window("External Force/Torque Controller", width=420, height=470)
 
-        self.body_names = ["link_torso_5", "ee_left", "ee_right"]
+        self.body_names = ["link_torso_5", "link_left_arm_6", "link_right_arm_6"]
         self.selected_body = "link_torso_5"
 
         self.forces = {
             "link_torso_5": np.zeros(3, dtype=float),
-            "ee_left": np.zeros(3, dtype=float),
-            "ee_right": np.zeros(3, dtype=float),
+            "link_left_arm_6": np.zeros(3, dtype=float),
+            "link_right_arm_6": np.zeros(3, dtype=float),
         }
         self.torques = {
             "link_torso_5": np.zeros(3, dtype=float),
-            "ee_left": np.zeros(3, dtype=float),
-            "ee_right": np.zeros(3, dtype=float),
+            "link_left_arm_6": np.zeros(3, dtype=float),
+            "link_right_arm_6": np.zeros(3, dtype=float),
         }
 
         self.apply_once_requested = False
@@ -382,6 +412,12 @@ def _build_argparser():
                    help="Target port for RobotState transmission")
     p.add_argument("--cmd-port", type=int, default=ROBOT_CMD_PORT,
                    help="Port for receiving RobotCommand")
+    p.add_argument("--gripper", dest="gripper_enabled", action="store_true", default=False,
+                   help="Load the selected gripper asset and allow gripper control")
+    p.add_argument("--no-gripper", dest="gripper_enabled", action="store_false",
+                   help="Load only the no-gripper robot USD and disable all gripper control (default)")
+    p.add_argument("--gripper-name", default="rb_gripper",
+                   help="Gripper folder name under assets/gripper (default: rb_gripper)")
     p.add_argument("--sim-gripper", action="store_true",
                    help="Enable receiving gripper commands from SimDynamixelBus")
     p.add_argument("--no-sim-gripper", action="store_true",
@@ -399,10 +435,12 @@ def main() -> None:
     args, _unknown = _build_argparser().parse_known_args()
 
     # --no-sim-gripper overrides --sim-gripper (used by docker default args).
-    sim_gripper_enabled = args.sim_gripper and not args.no_sim_gripper
+    gripper_enabled = args.gripper_enabled
+    sim_gripper_enabled = gripper_enabled and args.sim_gripper and not args.no_sim_gripper
+    if args.sim_gripper and not gripper_enabled:
+        print("[Simulation] --sim-gripper ignored because --no-gripper is set.")
 
     simulation_app = SimulationApp({"headless": False})
-
 
     simulation = Simulation(
         simulation_app,
@@ -410,11 +448,13 @@ def main() -> None:
         udp_state_send_ip=args.state_ip,
         udp_state_send_port=args.state_port,
         udp_cmd_recv_port=args.cmd_port,
+        gripper_enabled=gripper_enabled,
         use_sim_gripper=sim_gripper_enabled,
         sim_gripper_cmd_port=args.gripper_cmd_port,
         sim_gripper_state_host=args.gripper_state_ip,
         sim_gripper_state_port=args.gripper_state_port,
         robot_model=args.model,
+        gripper_name=args.gripper_name,
     )
     simulation.initial_reset()
 
@@ -422,9 +462,12 @@ def main() -> None:
         mode = f"model={args.model}, UDP(-> {args.state_ip}:{args.state_port}, <- :{args.cmd_port})"
     else:
         mode = f"model={args.model}, standalone"
+    mode += f", Gripper({args.gripper_name if gripper_enabled else 'off'})"
     if sim_gripper_enabled:
         mode += (f" + SimGripper(cmd←:{args.gripper_cmd_port}, "
                  f"state→{args.gripper_state_ip}:{args.gripper_state_port})")
+    elif not gripper_enabled:
+        mode += " + SimGripper(off: no gripper)"
     elif args.no_sim_gripper:
         mode += " + SimGripper(off)"
     print(f"[Simulation] Starting... [{mode}]")

@@ -10,6 +10,17 @@ Rainbow Robotics **RBY1** robot simulator powered by **NVIDIA Isaac Sim 5.1.0**.
 * [Docker](https://docs.docker.com/engine/install/)
 * [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
 
+### Minimal install check
+
+```bash
+nvidia-smi
+docker --version
+dpkg -l | grep -E 'nvidia-container-toolkit|nvidia-container-runtime'
+```
+
+If `nvidia-smi` prints the GPU table and the last command lists an NVIDIA
+container package, the NVIDIA driver, Docker, and NVIDIA Container Toolkit are
+installed.
 
 ## Quick start
 
@@ -21,7 +32,6 @@ cd rby1-sim-isaac
 ```
 
 ### 2. Run
-
 
 | Script | Robot control | Robot UDP bridge | `app_main isaac` |
 |--------|---------------|------------------|------------------|
@@ -35,6 +45,8 @@ Connects rby1-sdk with the Isaac Sim container to enable robot control via rby1 
 ```bash
 ./docker/run_sdk.sh --image 0.10.7-a_v1.2   # Model A v1.2
 ./docker/run_sdk.sh --image 0.10.7-m_v1.2   # Model M v1.2
+./docker/run_sdk.sh --image 0.10.7-a_v1.2 --gripper --gripper-name rb_gripper
+./docker/run_sdk.sh --image 0.10.7-m_v1.2 --gripper --gripper-name rb_gripper
 ```
 
 #### Standalone mode
@@ -44,7 +56,55 @@ Runs Isaac Sim only. The robot is controlled by the built-in PD trajectory in `R
 ```bash
 ./docker/run.sh --image 0.10.7-a_v1.2   # Model A v1.2
 ./docker/run.sh --image 0.10.7-m_v1.2   # Model M v1.2
+GRIPPER_NAME=rb_gripper ./docker/run.sh --image 0.10.7-m_v1.2
 ```
+
+The default launch uses the no-gripper base USD. Additional arguments after
+`--image` are forwarded to `simulation.py`, including `--gripper`,
+`--gripper-name <name>`, and `--no-sim-gripper`. A gripper can also be selected
+and enabled with the `GRIPPER_NAME` environment variable.
+
+### Custom gripper assets
+
+The simulator loads gripper assets by folder name, so a different hand can be
+attached without modifying the base RBY1 USD. Place the hand USD files and mount
+configuration under `assets/gripper/<gripper-name>/`:
+
+<img width="1280" height="900" alt="RBY1 custom gripper attachment structure" src="docs/gripper_attachment_overview.svg" />
+
+```text
+assets/gripper/<gripper-name>/
+├── <gripper-name>_left.usd
+├── <gripper-name>_right.usd
+└── gripper.json
+```
+
+`gripper.json` defines which prim in each hand is fixed to the robot wrist:
+
+```json
+{
+  "left": {
+    "body": "link_mount_left",
+    "mount_pos": [0.0, 0.0, -0.1261],
+    "mount_rot": [0.0, 0.70710678, -0.70710678, 0.0]
+  },
+  "right": {
+    "body": "link_mount_right",
+    "mount_pos": [0.0, 0.0, -0.1261],
+    "mount_rot": [0.0, 0.70710678, 0.70710678, 0.0]
+  }
+}
+```
+
+For example, a user-provided hand can be tested by placing USD files under
+`assets/gripper/custom_gripper/` and launching:
+
+```bash
+./docker/run.sh --image 0.10.7-a_v1.2 --gripper --gripper-name custom_gripper
+```
+
+User-provided USD files are not included in this repository; only the attachment
+pattern and `gripper_servers/custom_gripper.py` adapter skeleton are provided.
 
 ## Supported images
 

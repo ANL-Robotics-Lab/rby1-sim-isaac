@@ -2,8 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Central configuration constants for rby1-sim-isaac.
 
-All hardcoded constants (physics rates, UDP ports, PD gains, gripper calibration)
-live here so they can be tuned in one place.
+Common simulation constants (physics rates, UDP ports, PD gains) live here so
+they can be tuned in one place. Gripper-specific calibration belongs to each
+gripper adapter.
 """
 from __future__ import annotations
 
@@ -37,7 +38,7 @@ ROBOT_STATE_HOST: Final[str] = "127.0.0.1"   # Isaac Sim → C++ rby1-sdk
 ROBOT_STATE_PORT: Final[int] = 5005
 ROBOT_CMD_PORT: Final[int] = 5006            # C++ rby1-sdk → Isaac Sim
 
-# Gripper bridge (SimDynamixelBus ↔ SimGripperServer)
+# Gripper bridge defaults (SimDynamixelBus ↔ gripper-specific server)
 GRIPPER_HOST: Final[str] = os.environ.get("RBY1_SIM_GRIPPER_HOST", "127.0.0.1")
 GRIPPER_CMD_PORT: Final[int] = int(os.environ.get("RBY1_SIM_GRIPPER_CMD_PORT", "5007"))
 GRIPPER_STATE_PORT: Final[int] = int(os.environ.get("RBY1_SIM_GRIPPER_STATE_PORT", "5008"))
@@ -78,20 +79,5 @@ JOINT_KD_BASE: Final[np.ndarray] = np.array([
     2.0, 2.0,
 ], dtype=np.float32)
 
-PD_GAIN_SCALE: Final[float] = 10.0
-
-# Damping term scaling used inside PDController.compute_torque (matches MuJoCo callback).
-TORQUE_DAMPING_SCALE: Final[float] = 0.002
-
-
-# ============================================================
-# Gripper calibration & finger joint kinematics
-# ============================================================
-
-# Fake homing range for SimDynamixelBus (emulates motor radian span at ~±45°).
-GRIPPER_HOME_MIN_RAD: Final[float] = -0.785398
-GRIPPER_HOME_MAX_RAD: Final[float] = +0.785398
-GRIPPER_HOMING_STEP_RAD: Final[float] = 0.1
-
-# URDF finger prismatic joint travel: lower=-0.05 m (open), upper=0.0 m (closed).
-GRIPPER_FINGER_TRAVEL_M: Final[float] = 0.05
+# Fixed dt used by the PD torque controller. Kept as a control-domain alias of PHYSICS_DT.
+PD_CONTROL_DT: Final[float] = PHYSICS_DT

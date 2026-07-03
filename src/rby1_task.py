@@ -3,6 +3,7 @@
 """Isaac Sim ``BaseTask`` implementing the RBY1 simulation loop (model M/A)."""
 from __future__ import annotations
 
+import json
 import os
 import time
 from dataclasses import dataclass
@@ -13,15 +14,13 @@ from isaacsim.core.api.scenes.scene import Scene
 from isaacsim.core.api.tasks import BaseTask
 from isaacsim.core.utils.rotations import quat_to_rot_matrix
 from isaacsim.core.utils.stage import add_reference_to_stage
+from pxr import Gf, Sdf, UsdPhysics
 
+from config import PD_CONTROL_DT
+from gripper_servers import BaseGripperServer
 from rby1_controller import PDController
 from rby1_robot import RBY1Robot
 from rby1_udp_bridge import RBY1UdpBridge
-from sim_gripper_bridge import (
-    SimGripperServer,
-    closeness_to_finger_meter,
-    finger_meter_to_closeness,
-)
 
 
 # ============================================================
@@ -31,7 +30,8 @@ from sim_gripper_bridge import (
 @dataclass(frozen=True)
 class RBY1ModelConfig:
     model: str
-    usd_file_name: str
+    base_usd_file_name: str
+    modular_gripper_supported: bool
     cpp_joint_names: tuple[str, ...]
     joint_kp: tuple[float, ...]
     joint_kd: tuple[float, ...]
@@ -63,25 +63,58 @@ _BODY_JOINT_KD = (
 RBY1_MODEL_CONFIGS = {
     "a": RBY1ModelConfig(
         model="a",
-        usd_file_name="model_v_1_2_a.usd",
+        base_usd_file_name="model_v_1_2_a.usd",
+        modular_gripper_supported=True,
         cpp_joint_names=("right_wheel", "left_wheel", *_BODY_JOINT_NAMES),
-        joint_kp=(100.0, 100.0, *_BODY_JOINT_KP),
-        joint_kd=(15.0, 15.0, *_BODY_JOINT_KD),
+        joint_kp=(262.8, 262.8, *_BODY_JOINT_KP),
+        joint_kd=(3754.9, 3754.9, *_BODY_JOINT_KD),
         mobility_dof=2,
         reference_wheel_target=(-1.0, -0.5),
     ),
     "m": RBY1ModelConfig(
         model="m",
-        usd_file_name="model_v_1_2_m.usd",
+        base_usd_file_name="model_v_1_2_m.usd",
+        modular_gripper_supported=True,
         cpp_joint_names=("wheel_fr", "wheel_fl", "wheel_rr", "wheel_rl", *_BODY_JOINT_NAMES),
-        joint_kp=(100.0, 100.0, 100.0, 100.0, *_BODY_JOINT_KP),
-        joint_kd=(15.0, 15.0, 15.0, 15.0, *_BODY_JOINT_KD),
+        joint_kp=(262.8, 262.8, 262.8, 262.8, *_BODY_JOINT_KP),
+        joint_kd=(3754.9, 3754.9, 3754.9, 3754.9, *_BODY_JOINT_KD),
         mobility_dof=4,
         reference_wheel_target=(0.5, -0.5, -0.5, 0.5),
     ),
 }
 
-JOINT_VELOCITY_LPF_ALPHA = 0.5
+JOINT_VELOCITY_AVG_WINDOW = 10
+DEFAULT_GRIPPER_NAME = "rb_gripper"
+
+
+@dataclass(frozen=True)
+class GripperSideConfig:
+    body: str
+    mount_pos: tuple[float, float, float]
+    mount_rot: tuple[float, float, float, float]
+
+
+@dataclass(frozen=True)
+class GripperAssetConfig:
+    name: str
+    left_usd_path: str
+    right_usd_path: str
+    sides: dict[str, GripperSideConfig]
+
+
+GRIPPER_SIDES = ("left", "right")
+GRIPPER_MOUNT_BODIES = {
+    "left": "link_left_arm_6",
+    "right": "link_right_arm_6",
+}
+GRIPPER_TOOL_JOINTS = {
+    "left": "tool_left",
+    "right": "tool_right",
+}
+GRIPPER_ROOT_NAMES = {
+    "left": "left_gripper",
+    "right": "right_gripper",
+}
 
 
 def normalize_robot_model(robot_model: str) -> str:
@@ -115,6 +148,76 @@ def _resolve_usd_path(usd_file_name: str) -> str:
     return os.path.join(src_dir, usd_file_name)
 
 
+def _repo_assets_dir() -> str:
+    src_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(os.path.dirname(src_dir), "assets")
+
+
+def _validate_gripper_name(gripper_name: str) -> str:
+    name = str(gripper_name).strip()
+    if not name or name in {".", ".."} or os.path.basename(name) != name:
+        raise ValueError(f"Invalid gripper name '{gripper_name}'. Use a folder name under assets/gripper/.")
+    return name
+
+
+def _read_float_tuple(raw, length: int, field_name: str, config_path: str) -> tuple[float, ...]:
+    if not isinstance(raw, list) or len(raw) != length:
+        raise ValueError(f"{config_path}: '{field_name}' must be a list of {length} numbers.")
+    try:
+        return tuple(float(value) for value in raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{config_path}: '{field_name}' must contain only numbers.") from exc
+
+
+def _load_gripper_config(config_path: str) -> dict[str, GripperSideConfig]:
+    with open(config_path, "r", encoding="utf-8") as f:
+        raw_config = json.load(f)
+
+    if not isinstance(raw_config, dict):
+        raise ValueError(f"{config_path}: gripper config must be a JSON object.")
+
+    sides: dict[str, GripperSideConfig] = {}
+    for side in GRIPPER_SIDES:
+        raw_side = raw_config.get(side)
+        if not isinstance(raw_side, dict):
+            raise ValueError(f"{config_path}: missing object field '{side}'.")
+
+        body = raw_side.get("body")
+        if not isinstance(body, str) or not body.strip():
+            raise ValueError(f"{config_path}: '{side}.body' must be a non-empty string.")
+
+        sides[side] = GripperSideConfig(
+            body=body.strip(),
+            mount_pos=_read_float_tuple(raw_side.get("mount_pos"), 3, f"{side}.mount_pos", config_path),
+            mount_rot=_read_float_tuple(raw_side.get("mount_rot"), 4, f"{side}.mount_rot", config_path),
+        )
+
+    return sides
+
+
+def _resolve_gripper_asset(gripper_name: str) -> GripperAssetConfig:
+    name = _validate_gripper_name(gripper_name)
+    gripper_dir = os.path.join(_repo_assets_dir(), "gripper", name)
+    config_path = os.path.join(gripper_dir, "gripper.json")
+    left_usd_path = os.path.join(gripper_dir, f"{name}_left.usd")
+    right_usd_path = os.path.join(gripper_dir, f"{name}_right.usd")
+
+    missing_paths = [
+        path for path in (config_path, left_usd_path, right_usd_path)
+        if not os.path.isfile(path)
+    ]
+    if missing_paths:
+        missing = ", ".join(missing_paths)
+        raise FileNotFoundError(f"Missing gripper asset file(s) for '{name}': {missing}")
+
+    return GripperAssetConfig(
+        name=name,
+        left_usd_path=left_usd_path,
+        right_usd_path=right_usd_path,
+        sides=_load_gripper_config(config_path),
+    )
+
+
 # ============================================================
 # Task definition
 # ============================================================
@@ -122,23 +225,34 @@ def _resolve_usd_path(usd_file_name: str) -> str:
 class RBY1Task(BaseTask):
     """Drives the RBY1 articulation from external UDP commands (or a built-in test trajectory)."""
 
-    GRIPPER_JOINT_NAMES = ["gripper_finger_l1", "gripper_finger_r1"]
-
     def __init__(
         self,
         udp_bridge: Optional[RBY1UdpBridge] = None,
         robot_model: str = "m",
-        gripper_server: Optional[SimGripperServer] = None,
+        gripper_enabled: bool = False,
+        gripper_name: str = DEFAULT_GRIPPER_NAME,
+        gripper_server: Optional[BaseGripperServer] = None,
     ):
         super().__init__(name="rby1_task", offset=None)
         self.robot_model = normalize_robot_model(robot_model)
         self.model_config = RBY1_MODEL_CONFIGS[self.robot_model]
         self.robot = None
         self.robot_prim_path = "/World/RBY1"
-        self.usd_path = _resolve_usd_path(self.model_config.usd_file_name)
+        self.gripper_enabled = gripper_enabled
+        self.gripper_name = _validate_gripper_name(gripper_name) if gripper_enabled else DEFAULT_GRIPPER_NAME
+        self.gripper_asset_config: Optional[GripperAssetConfig] = None
+
+        if self.gripper_enabled:
+            if not self.model_config.modular_gripper_supported:
+                raise RuntimeError(
+                    f"[RBY1Task] model '{self.robot_model}' does not support modular gripper attachment."
+                )
+            self.gripper_asset_config = _resolve_gripper_asset(self.gripper_name)
+
+        self.usd_path = _resolve_usd_path(self.model_config.base_usd_file_name)
         self.step_counter = 0
         self.udp_bridge = udp_bridge          # None -> standalone mode (no UDP)
-        self.gripper_server = gripper_server  # optional sim gripper bridge
+        self.gripper_server = gripper_server if gripper_enabled else None
         self.force_ui = None                  # optional ExternalForceUI
 
         self._last_command_seq = 0
@@ -150,8 +264,11 @@ class RBY1Task(BaseTask):
         self._last_pre_step_sim_time: Optional[float] = None
         self._prev_diff_position: Optional[np.ndarray] = None
         self._prev_diff_time: Optional[float] = None
-        self._joint_velocity_lpf_alpha = JOINT_VELOCITY_LPF_ALPHA
-        self._filtered_joint_velocity: Optional[np.ndarray] = None
+        self._joint_velocity_samples: Optional[np.ndarray] = None
+        self._joint_velocity_sample_sum: Optional[np.ndarray] = None
+        self._joint_velocity_sample_idx = 0
+        self._wheel_raw_position_prev: Optional[np.ndarray] = None
+        self._wheel_multiturn_position: Optional[np.ndarray] = None
         self._joint_indices_np: Optional[np.ndarray] = None
         self._ready_flags: Optional[np.ndarray] = None
         self._zero_ctrl_state: Optional[np.ndarray] = None
@@ -181,8 +298,17 @@ class RBY1Task(BaseTask):
         ground_plane._collision_prim.set_contact_offset(0.002)
         ground_plane._collision_prim.set_rest_offset(0.0)
 
-        print(f"[RBY1Task] model={self.robot_model}, usd_path={self.usd_path}")
+        if self.gripper_asset_config is None:
+            gripper_label = "off" if not self.gripper_enabled else "base-usd"
+        else:
+            gripper_label = self.gripper_asset_config.name
+        print(
+            f"[RBY1Task] model={self.robot_model}, gripper={gripper_label}, "
+            f"usd_path={self.usd_path}"
+        )
         add_reference_to_stage(usd_path=self.usd_path, prim_path=self.robot_prim_path)
+        if self.gripper_asset_config is not None:
+            self._add_gripper_to_robot(scene.stage)
 
         self.rby_robot = RBY1Robot(
             prim_path=self.robot_prim_path,
@@ -200,6 +326,72 @@ class RBY1Task(BaseTask):
         self.robot.set_solver_position_iteration_count(4)
         self.robot.set_solver_velocity_iteration_count(1)
 
+    def _add_gripper_to_robot(self, stage) -> None:
+        """Compose the selected gripper into the robot articulation and mount it."""
+        if self.gripper_asset_config is None:
+            return
+
+        print(
+            f"[RBY1Task] loading gripper '{self.gripper_asset_config.name}': "
+            f"{self.gripper_asset_config.left_usd_path}, "
+            f"{self.gripper_asset_config.right_usd_path}"
+        )
+        side_usd_paths = {
+            "left": self.gripper_asset_config.left_usd_path,
+            "right": self.gripper_asset_config.right_usd_path,
+        }
+        for side in GRIPPER_SIDES:
+            gripper_root_path = self._gripper_side_root_path(side)
+            add_reference_to_stage(
+                usd_path=side_usd_paths[side],
+                prim_path=gripper_root_path,
+            )
+            print(f"[RBY1Task] gripper {side} root: {gripper_root_path}")
+
+        for side in GRIPPER_SIDES:
+            self._create_gripper_mount_joint(
+                stage=stage,
+                side=side,
+                side_config=self.gripper_asset_config.sides[side],
+                gripper_root_path=self._gripper_side_root_path(side),
+            )
+
+    def _create_gripper_mount_joint(
+        self,
+        stage,
+        side: str,
+        side_config: GripperSideConfig,
+        gripper_root_path: str,
+    ) -> UsdPhysics.FixedJoint:
+        """Create the fixed tool joint between a wrist link and gripper base."""
+        joint_path = self._child_prim_path(self.robot_prim_path, f"joints/{GRIPPER_TOOL_JOINTS[side]}")
+        body0_path = self._child_prim_path(self.robot_prim_path, GRIPPER_MOUNT_BODIES[side])
+        body1_path = self._child_prim_path(gripper_root_path, side_config.body)
+
+        fixed_joint = UsdPhysics.FixedJoint.Define(stage, joint_path)
+        fixed_joint.GetBody0Rel().SetTargets([Sdf.Path(body0_path)])
+        fixed_joint.GetBody1Rel().SetTargets([Sdf.Path(body1_path)])
+
+        fixed_joint.CreateLocalPos0Attr().Set(Gf.Vec3f(*side_config.mount_pos))
+        fixed_joint.CreateLocalRot0Attr().Set(
+            Gf.Quatf(side_config.mount_rot[0], Gf.Vec3f(*side_config.mount_rot[1:]))
+        )
+        fixed_joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
+        fixed_joint.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, Gf.Vec3f(0.0, 0.0, 0.0)))
+        fixed_joint.CreateBreakForceAttr().Set(float("inf"))
+        fixed_joint.CreateBreakTorqueAttr().Set(float("inf"))
+
+        return fixed_joint
+
+    def _gripper_side_root_path(self, side: str) -> str:
+        return self._child_prim_path(self.robot_prim_path, GRIPPER_ROOT_NAMES[side])
+
+    @staticmethod
+    def _child_prim_path(root_path: str, child_path: str) -> str:
+        if child_path.startswith("/"):
+            return child_path
+        return f"{root_path.rstrip('/')}/{child_path.lstrip('/')}"
+
     # ------------------------------------------------------------------
     # Physics step
     # ------------------------------------------------------------------
@@ -214,8 +406,8 @@ class RBY1Task(BaseTask):
         if self.udp_bridge is None:
             # Standalone mode: drive a built-in test trajectory (C++ DOF order).
             self._update_full_state(simulation_time, update_velocity=True)
-            velocity_mode, target = self._build_reference_target(simulation_time)
-            self.pd_controller.update_target(target, velocity_mode)
+            wheel_velocity_mode, target = self._build_reference_target(simulation_time)
+            self.pd_controller.update_target(target, wheel_velocity_mode)
         else:
             # UDP mode: consume the latest command (waiting for a fresh one once the stream started).
             if self._state_sent_once and self._command_stream_started:
@@ -239,7 +431,7 @@ class RBY1Task(BaseTask):
         self.robot.set_joint_efforts(self._compute_reordered_efforts())
 
         # Optional sim gripper bridge.
-        if self.gripper_server is not None:
+        if self.gripper_enabled and self.gripper_server is not None:
             self._apply_gripper_commands(simulation_time)
 
         self._apply_external_force_ui()
@@ -272,8 +464,8 @@ class RBY1Task(BaseTask):
         body_name = getattr(force_ui, "selected_body", "link_torso_5")
         body_prims = {
             "link_torso_5": self.robot.torso_5,
-            "ee_left": self.robot.ee_left,
-            "ee_right": self.robot.ee_right,
+            "link_left_arm_6": self.robot.link_left_arm_6,
+            "link_right_arm_6": self.robot.link_right_arm_6,
         }
         rigid_prim = body_prims.get(body_name)
         if rigid_prim is None:
@@ -334,62 +526,62 @@ class RBY1Task(BaseTask):
 
     def _apply_udp_command(self, cmd) -> None:
         """Store a received RobotCommand as the PD reference used by the next pre_step."""
-        mode, cmd_target, feedback_gain, feedforward_torque, _finished, _kp, _kd = cmd
-        mode = np.array(mode, dtype=bool)
-        mode[: self.model_config.mobility_dof] = True
-        # C++ mode: True = velocity control, False = position control (matches MuJoCo).
-        self.pd_controller.update_target(cmd_target, mode)
+        _mode, cmd_target, feedback_gain, feedforward_torque, _finished, _kp, _kd = cmd
+        target = np.asarray(cmd_target, dtype=float)
+        integrated_velocity_mode = np.asarray(_mode, dtype=bool)
+        self.pd_controller.update_target(target, integrated_velocity_mode)
         self.pd_controller.feedback_gain = np.clip(feedback_gain.astype(float) / 10.0, 0.0, 1.0)
         self.pd_controller.feedforward_term = feedforward_torque
 
     def _apply_gripper_commands(self, simulation_time: float) -> None:
-        """Drive finger joints from ``SimGripperServer`` closeness targets."""
-        cmd = self.gripper_server.get_targets()
-        # Only apply commands after homing is complete (safety guard).
-        if cmd["homed"]:
-            left_m = closeness_to_finger_meter(cmd["left"])
-            right_m = closeness_to_finger_meter(cmd["right"])
-            targets = np.array([left_m, right_m], dtype=np.float64)
-            self.robot._articulation_view.set_joint_position_targets(
-                targets, joint_indices=self.gripper_command_indices
-            )
+        """Apply gripper-server joint targets and publish current joint state."""
+        if not self.gripper_enabled or self.gripper_server is None:
+            return
+        if not self.gripper_command_indices:
+            return
 
-        # Report present positions back as closeness (best-effort).
+        current_positions = None
         try:
             joints_state = self.robot.get_joints_state()
             positions = np.asarray(joints_state.positions, dtype=np.float64)
-            l_idx, r_idx = self.gripper_command_indices
-            self.gripper_server.set_present(
-                finger_meter_to_closeness(positions[l_idx]),
-                finger_meter_to_closeness(positions[r_idx]),
-                simulation_time,
-            )
+            current_positions = positions[self.gripper_command_indices]
         except Exception:
             pass
 
+        targets = self.gripper_server.get_target_positions(current_positions, simulation_time)
+        if targets is not None:
+            self.robot._articulation_view.set_joint_position_targets(
+                np.asarray(targets, dtype=np.float64),
+                joint_indices=self.gripper_command_indices,
+            )
+
+        if current_positions is not None:
+            self.gripper_server.publish_state(current_positions, simulation_time)
+
     def _build_reference_target(self, simulation_time: float) -> tuple[np.ndarray, np.ndarray]:
         """Generate a built-in test trajectory (C++ model DOF order) for standalone mode."""
-        velocity_mode = np.zeros(len(self.joint_indices), dtype=bool)
+        wheel_velocity_mode = np.zeros(len(self.joint_indices), dtype=bool)
         target = np.zeros(len(self.joint_indices))
 
-        velocity_mode[: self.model_config.mobility_dof] = True
+        wheel_velocity_mode[: self.model_config.mobility_dof] = True
         target[: self.model_config.mobility_dof] = self.model_config.reference_wheel_target
-        target[: self.model_config.mobility_dof] *= np.clip(simulation_time * 0.1, a_min=0.0, a_max=1.0)
+        target[: self.model_config.mobility_dof] *= np.clip(simulation_time * 0.05, a_min=0.0, a_max=1.0)
 
-        if simulation_time < 4.0:
-            gripper_target = np.array([[0.0, -0.0]], dtype=np.float32)
-            self.robot._articulation_view.set_joint_position_targets(
-                positions=gripper_target,
-                joint_indices=self.gripper_command_indices,
-            )
-        elif simulation_time < 8.0:
-            gripper_target = np.array([[-0.05, -0.05]], dtype=np.float32)
-            self.robot._articulation_view.set_joint_position_targets(
-                positions=gripper_target,
-                joint_indices=self.gripper_command_indices,
-            )
+        if self.gripper_enabled and self.gripper_command_indices:
+            if simulation_time < 4.0:
+                gripper_target = np.array([[0.0, -0.0]], dtype=np.float32)
+                self.robot._articulation_view.set_joint_position_targets(
+                    positions=gripper_target,
+                    joint_indices=self.gripper_command_indices,
+                )
+            elif simulation_time < 8.0:
+                gripper_target = np.array([[-0.05, -0.05]], dtype=np.float32)
+                self.robot._articulation_view.set_joint_position_targets(
+                    positions=gripper_target,
+                    joint_indices=self.gripper_command_indices,
+                )
 
-        return velocity_mode, target
+        return wheel_velocity_mode, target
 
     def _compute_reordered_efforts(self) -> np.ndarray:
         """Expand the C++ model-DOF torques into the full Isaac Sim DOF buffer."""
@@ -415,10 +607,12 @@ class RBY1Task(BaseTask):
     def _update_full_state(self, sample_time: Optional[float] = None, update_velocity: bool = True) -> None:
         """Update the member state buffers needed by the standalone path."""
         joints_state = self.robot.get_joints_state()
-        joints_tau = self.robot.get_measured_joint_efforts()
+        # joints_tau = self.robot.get_measured_joint_efforts()
+        joints_tau = self.robot.get_applied_joint_efforts()
         pos_IB, quat_IB = self.robot.get_world_pose()
         base_lin_vel_b, base_ang_vel_b = self._get_base_velocities_in_body_frame(quat_IB)
-        q = np.array(joints_state.positions)[self.joint_indices]
+        raw_q = np.asarray(joints_state.positions, dtype=float)[self.joint_indices]
+        q = self._update_wheel_multiturn_position(raw_q)
         np.copyto(self._state_q, q)
         self._update_joint_velocity(sample_time, update_velocity)
 
@@ -433,10 +627,12 @@ class RBY1Task(BaseTask):
 
     def _update_udp_state(self, sample_time: Optional[float] = None, update_velocity: bool = True) -> None:
         """Update only the minimal joint state needed by the UDP lockstep path."""
-        q = np.asarray(self.robot.get_joint_positions(joint_indices=self._joint_indices_np))
+        raw_q = np.asarray(self.robot.get_joint_positions(joint_indices=self._joint_indices_np), dtype=float)
+        q = self._update_wheel_multiturn_position(raw_q)
         np.copyto(self._state_q, q)
         self._update_joint_velocity(sample_time, update_velocity)
-        joints_tau = self.robot.get_measured_joint_efforts()
+        # joints_tau = self.robot.get_measured_joint_efforts()
+        joints_tau = self.robot.get_applied_joint_efforts()
         raw_tau = joints_tau
         if raw_tau is None or np.ndim(raw_tau) == 0:
             self._state_tau.fill(0.0)
@@ -444,35 +640,90 @@ class RBY1Task(BaseTask):
             tau = np.array(raw_tau)[self.joint_indices]
             np.copyto(self._state_tau, tau)
 
+    def _update_wheel_multiturn_position(self, raw_q: np.ndarray) -> np.ndarray:
+        """Return joint positions with wheel joints unwrapped into a multi-turn frame."""
+        q = np.asarray(raw_q, dtype=float).copy()
+        mobility_dof = self.model_config.mobility_dof
+        if mobility_dof <= 0:
+            return q
+
+        raw_wheel = q[:mobility_dof]
+        if (
+            self._wheel_raw_position_prev is None
+            or self._wheel_multiturn_position is None
+            or self._wheel_raw_position_prev.shape != raw_wheel.shape
+            or self._wheel_multiturn_position.shape != raw_wheel.shape
+        ):
+            self._wheel_raw_position_prev = raw_wheel.copy()
+            self._wheel_multiturn_position = raw_wheel.copy()
+            q[:mobility_dof] = self._wheel_multiturn_position
+            self._sync_wheel_target_to_multiturn_position()
+            return q
+
+        raw_delta = raw_wheel - self._wheel_raw_position_prev
+        wheel_delta = (raw_delta + np.pi) % (2.0 * np.pi) - np.pi
+        self._wheel_multiturn_position += wheel_delta
+        np.copyto(self._wheel_raw_position_prev, raw_wheel)
+        q[:mobility_dof] = self._wheel_multiturn_position
+        return q
+
+    def _sync_wheel_target_to_multiturn_position(self) -> None:
+        """Align wheel position references to the first observed multi-turn wheel state."""
+        if self._wheel_multiturn_position is None:
+            return
+        if not hasattr(self, "pd_controller"):
+            return
+        if self._command_stream_started:
+            return
+
+        mobility_dof = self.model_config.mobility_dof
+        self.pd_controller.target_pos[:mobility_dof] = self._wheel_multiturn_position
+
     def _update_joint_velocity(self, sample_time: Optional[float], update_velocity: bool) -> None:
-        """Derive a finite-difference velocity from ``_state_q`` and apply a low-pass filter."""
+        """Derive fixed-step joint velocity and smooth it with a moving average."""
         if self._state_q is None or self._state_dq is None:
             raise RuntimeError("[RBY1Task] joint state buffer not initialised.")
 
-        if sample_time is None or not update_velocity:
+        if not update_velocity:
             return
 
-        if self._prev_diff_position is None or self._prev_diff_time is None:
+        if self._prev_diff_position is None:
             self._prev_diff_position = self._state_q.copy()
             self._prev_diff_time = sample_time
             self._state_dq.fill(0.0)
-            if self._filtered_joint_velocity is not None:
-                self._filtered_joint_velocity.fill(0.0)
-            return
-
-        dt = sample_time - self._prev_diff_time
-        if dt <= 1e-9:
+            if self._joint_velocity_samples is not None:
+                self._joint_velocity_samples.fill(0.0)
+            if self._joint_velocity_sample_sum is not None:
+                self._joint_velocity_sample_sum.fill(0.0)
+            self._joint_velocity_sample_idx = 0
             return
 
         np.subtract(self._state_q, self._prev_diff_position, out=self._state_dq)
-        self._state_dq /= dt
+        self._state_dq /= PD_CONTROL_DT
 
-        if self._filtered_joint_velocity is None or self._filtered_joint_velocity.shape != self._state_dq.shape:
-            self._filtered_joint_velocity = np.zeros_like(self._state_dq)
+        expected_sample_shape = (JOINT_VELOCITY_AVG_WINDOW, self._state_dq.shape[0])
+        if (
+            self._joint_velocity_samples is None
+            or self._joint_velocity_samples.shape != expected_sample_shape
+        ):
+            self._joint_velocity_samples = np.zeros(expected_sample_shape, dtype=float)
+            self._joint_velocity_sample_sum = np.zeros_like(self._state_dq)
+            self._joint_velocity_sample_idx = 0
+        elif (
+            self._joint_velocity_sample_sum is None
+            or self._joint_velocity_sample_sum.shape != self._state_dq.shape
+        ):
+            self._joint_velocity_sample_sum = np.zeros_like(self._state_dq)
+            self._joint_velocity_samples.fill(0.0)
+            self._joint_velocity_sample_idx = 0
 
-        alpha = self._joint_velocity_lpf_alpha
-        self._filtered_joint_velocity += alpha * (self._state_dq - self._filtered_joint_velocity)
-        np.copyto(self._state_dq, self._filtered_joint_velocity)
+        old_sample = self._joint_velocity_samples[self._joint_velocity_sample_idx]
+        self._joint_velocity_sample_sum += self._state_dq - old_sample
+        np.copyto(old_sample, self._state_dq)
+        self._joint_velocity_sample_idx = (
+            self._joint_velocity_sample_idx + 1
+        ) % JOINT_VELOCITY_AVG_WINDOW
+        np.copyto(self._state_dq, self._joint_velocity_sample_sum / JOINT_VELOCITY_AVG_WINDOW)
 
         np.copyto(self._prev_diff_position, self._state_q)
         self._prev_diff_time = sample_time
@@ -498,8 +749,13 @@ class RBY1Task(BaseTask):
             self._state_q.fill(0.0)
         if self._state_dq is not None:
             self._state_dq.fill(0.0)
-        if self._filtered_joint_velocity is not None:
-            self._filtered_joint_velocity.fill(0.0)
+        if self._joint_velocity_samples is not None:
+            self._joint_velocity_samples.fill(0.0)
+        if self._joint_velocity_sample_sum is not None:
+            self._joint_velocity_sample_sum.fill(0.0)
+        self._joint_velocity_sample_idx = 0
+        self._wheel_raw_position_prev = None
+        self._wheel_multiturn_position = None
         if self._state_tau is not None:
             self._state_tau.fill(0.0)
 
@@ -509,7 +765,11 @@ class RBY1Task(BaseTask):
         self._last_pre_step_sim_time = None
         self._prev_diff_position = None
         self._prev_diff_time = None
-        self._filtered_joint_velocity = None
+        self._joint_velocity_samples = None
+        self._joint_velocity_sample_sum = None
+        self._joint_velocity_sample_idx = 0
+        self._wheel_raw_position_prev = None
+        self._wheel_multiturn_position = None
         self._new_command_count_since_log = 0
         self._command_wait_miss_count_since_log = 0
         self._external_force_error_logged = False
@@ -543,24 +803,27 @@ class RBY1Task(BaseTask):
         self._zero_ctrl_state = np.zeros(n_ctrl, dtype=float)
         self._state_q = np.zeros(n_ctrl, dtype=float)
         self._state_dq = np.zeros(n_ctrl, dtype=float)
-        self._filtered_joint_velocity = np.zeros(n_ctrl, dtype=float)
+        self._joint_velocity_samples = np.zeros((JOINT_VELOCITY_AVG_WINDOW, n_ctrl), dtype=float)
+        self._joint_velocity_sample_sum = np.zeros(n_ctrl, dtype=float)
+        self._joint_velocity_sample_idx = 0
         self._state_tau = np.zeros(n_ctrl, dtype=float)
         self._efforts_full = np.zeros(self.num_joints, dtype=float)
 
         self.gripper_command_indices = []
-        for name in self.GRIPPER_JOINT_NAMES:
-            idx = self.robot._articulation_view.get_dof_index(name)
-            if idx < 0:
-                raise RuntimeError(
-                    f"[RBY1Task] gripper joint '{name}' not found in Isaac Sim DOF. "
-                    f"dof_names: {list(self.dof_names)}"
-                )
-            self.gripper_command_indices.append(idx)
-        print(f"[RBY1Task] gripper_command_indices: {self.gripper_command_indices}")
+        if self.gripper_enabled:
+            if self.gripper_server is None:
+                raise RuntimeError("[RBY1Task] gripper is enabled, but no gripper server was configured.")
+            self.gripper_command_indices = self.gripper_server.resolve_joint_indices(
+                self.robot._articulation_view
+            )
+            print(f"[RBY1Task] gripper_command_indices: {self.gripper_command_indices}")
+        else:
+            print("[RBY1Task] gripper disabled; skipping gripper joint lookup.")
 
         # Effort mode for the controlled joints; position mode for the gripper.
         self.robot._articulation_view.switch_control_mode("effort", joint_indices=self.joint_indices)
-        self.robot._articulation_view.switch_control_mode("position", joint_indices=self.gripper_command_indices)
+        if self.gripper_enabled and self.gripper_command_indices:
+            self.robot._articulation_view.switch_control_mode("position", joint_indices=self.gripper_command_indices)
 
         self.max_efforts = self.robot._articulation_view.get_max_efforts()[0, self.joint_indices]
 
@@ -577,7 +840,7 @@ class RBY1Task(BaseTask):
         self.pd_controller = PDController(kp=joint_kp, kd=joint_kd, num_joints=len(self.joint_indices))
 
         # Initialise the controller to a neutral state to avoid a sudden torque step on reset.
-        self.pd_controller.velocity_mode.fill(False)
+        self.pd_controller.integrated_velocity_mode.fill(False)
         self.pd_controller.target_pos.fill(0.0)
         self.pd_controller.target_vel.fill(0.0)
         self.pd_controller.feedback_gain.fill(1.0)

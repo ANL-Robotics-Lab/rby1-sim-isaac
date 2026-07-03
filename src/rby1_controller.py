@@ -5,30 +5,26 @@ from __future__ import annotations
 
 import numpy as np
 
-from config import TORQUE_DAMPING_SCALE
+from config import PD_CONTROL_DT
 
 
 class PDController:
-    """Per-joint PD controller with selectable position/velocity mode.
+    """Per-joint PD controller with integrated velocity targets for wheel joints.
 
     For each joint the computed torque is::
 
-        # position mode
-        torque = feedback_gain * (kp * pos_err + kd * vel_err * TORQUE_DAMPING_SCALE)
+        torque = feedback_gain * (kp * pos_err + kd * vel_err * PD_CONTROL_DT)
                  + feedforward_term
 
-        # velocity mode
-        torque = feedback_gain * (kd * vel_err)
-                 + feedforward_term
-
-    The ``TORQUE_DAMPING_SCALE`` factor matches the MuJoCo control callback.
+    Normal joints receive absolute position targets. Wheel joints receive
+    velocity targets, which are integrated into ``target_pos``.
     """
 
     def __init__(self, kp: np.ndarray, kd: np.ndarray, num_joints: int):
         self.kp = kp
         self.kd = kd
         self.num_joints = num_joints
-        self.velocity_mode    = np.zeros(num_joints, dtype=bool)
+        self.integrated_velocity_mode = np.zeros(num_joints, dtype=bool)
         self.target_pos       = np.zeros(num_joints, dtype=float)
         self.target_vel       = np.zeros(num_joints, dtype=float)
         self.feedback_gain    = np.ones(num_joints, dtype=float)
@@ -40,22 +36,22 @@ class PDController:
         pos_error = self.target_pos - curr_pos
         vel_error = self.target_vel - curr_vel
 
-        # Position PD result.
-        torque_pos = self.kp * pos_error + self.kd * vel_error * TORQUE_DAMPING_SCALE
-        # Velocity P result (matches the MuJoCo control callback).
-        torque_vel = self.kd * vel_error
-
         self.target_torque = (
             self.feedback_gain
-            * np.where(self.velocity_mode, torque_vel, torque_pos)
+            * (self.kp * pos_error + self.kd * vel_error * PD_CONTROL_DT)
             + self.feedforward_term
         )
         return self.target_torque
 
-    def update_target(self, target: np.ndarray, velocity_mode: np.ndarray) -> None:
-        self.velocity_mode = velocity_mode
-        self.target_pos = np.where(~self.velocity_mode, target, 0)
-        self.target_vel = np.where(self.velocity_mode, target, 0)
+    def update_target(self, target: np.ndarray, integrated_velocity_mode: np.ndarray) -> None:
+        """Update absolute targets, integrating wheel velocity commands."""
+        absolute_position_mode = ~integrated_velocity_mode
+
+        self.target_pos[absolute_position_mode] = target[absolute_position_mode]
+        self.target_pos[integrated_velocity_mode] += (target[integrated_velocity_mode] * PD_CONTROL_DT)
+
+        self.target_vel[absolute_position_mode] = 0.0
+        self.target_vel[integrated_velocity_mode] = target[integrated_velocity_mode]
 
     def update_gains(self, kp: np.ndarray, kd: np.ndarray) -> None:
         self.kp = kp

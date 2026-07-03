@@ -8,6 +8,11 @@ __pycache__/
 *.so
 *.c
 
+# User-provided gripper assets
+assets/gripper/*/
+!assets/gripper/rb_gripper/
+!assets/gripper/rb_gripper/**
+
 # Virtual environments
 .venv/
 venv/

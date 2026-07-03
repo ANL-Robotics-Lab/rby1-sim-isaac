@@ -19,6 +19,10 @@
 #   ./docker/run_sdk.sh --image 0.10.7-a_v1.2
 #   ./docker/run_sdk.sh --image rainbowroboticsofficial/rby1-sim-isaac:0.10.7-a_v1.2
 #   IMAGE_NAME=0.10.7-a_v1.2 ./docker/run_sdk.sh
+#   ./docker/run_sdk.sh --gripper --gripper-name rb_gripper
+#   GRIPPER_NAME=rb_gripper ./docker/run_sdk.sh
+#
+# All arguments except --image are forwarded to simulation.py through docker/run.sh.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

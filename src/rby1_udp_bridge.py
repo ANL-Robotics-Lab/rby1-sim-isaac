@@ -20,7 +20,6 @@ from typing import Optional, Tuple
 import numpy as np
 
 from udp_protocol import (
-    RobotCommand,
     build_robot_state_packet,
     parse_robot_command_packet,
 )

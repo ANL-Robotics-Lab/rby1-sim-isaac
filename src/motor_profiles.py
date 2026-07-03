@@ -57,10 +57,10 @@ JOINT_MOTOR_MODEL_PROFILES: Final[dict[str, dict[str, float]]] = {
     },
     "default": {
         "joint_friction": 0.0,
-        "static_effort": 0.1,
-        "dynamic_effort": 0.1,
-        "viscous_nm_s_per_rad": 0.1,
-        "armature": 0.1,
+        "static_effort": 2.0,
+        "dynamic_effort": 2.0,
+        "viscous_nm_s_per_rad": 3.0,
+        "armature": 0.5,
     },
 }
 

@@ -22,6 +22,13 @@ WHEEL_COLLISION_PRIM_PATH_EXPRS = {
     "a": "/World/RBY1/wheel_.*/collisions/mesh_0/cylinder",
 }
 
+# Model-M mecanum roller joints are passive, but a tiny angular drive damping
+# improves PhysX stability without trying to hold roller position.
+MECANUM_ROLLER_REVOLUTE_JOINT_PATH_EXPR = "/World/RBY1/wheel_.*_link/Roller_.*/RevoluteJoint"
+MECANUM_ROLLER_DRIVE_STIFFNESS = 0.0
+MECANUM_ROLLER_DRIVE_DAMPING = 0.0005
+MECANUM_ROLLER_TARGET_VELOCITY = 0.0
+
 # Model-A only: extra base collision geometry that needs a frictionless material.
 MODEL_A_EXTRA_GEOMETRY_PRIM_PATH_EXPR = "/World/RBY1/base/collisions/mesh_.*/cylinder"
 MODEL_A_EXTRA_GEOMETRY_MATERIAL_CONFIG = {
@@ -60,17 +67,17 @@ class RBY1Robot(SingleArticulation):
             articulation_controller=None,
         )
         self._torso_5 = None
-        self._ee_left = None
-        self._ee_right = None
+        self._link_left_arm_6 = None
+        self._link_right_arm_6 = None
 
     def post_reset(self) -> None:
         SingleArticulation.post_reset(self)
         if self._torso_5 is not None:
             self._torso_5.post_reset()
-        if self._ee_left is not None:
-            self._ee_left.post_reset()
-        if self._ee_right is not None:
-            self._ee_right.post_reset()
+        if self._link_left_arm_6 is not None:
+            self._link_left_arm_6.post_reset()
+        if self._link_right_arm_6 is not None:
+            self._link_right_arm_6.post_reset()
 
     def initialize(self, physics_sim_view: omni.physics.tensors.SimulationView = None) -> None:
         SingleArticulation.initialize(self, physics_sim_view=physics_sim_view)
@@ -82,17 +89,17 @@ class RBY1Robot(SingleArticulation):
         )
         self._torso_5.initialize(physics_sim_view=physics_sim_view)
 
-        self._ee_left = SingleRigidPrim(
-            prim_path=self.prim_path + "/ee_left",
-            name=self.name + "_ee_left",
+        self._link_left_arm_6 = SingleRigidPrim(
+            prim_path=self.prim_path + "/link_left_arm_6",
+            name=self.name + "_link_left_arm_6",
         )
-        self._ee_left.initialize(physics_sim_view=physics_sim_view)
+        self._link_left_arm_6.initialize(physics_sim_view=physics_sim_view)
 
-        self._ee_right = SingleRigidPrim(
-            prim_path=self.prim_path + "/ee_right",
-            name=self.name + "_ee_right",
+        self._link_right_arm_6 = SingleRigidPrim(
+            prim_path=self.prim_path + "/link_right_arm_6",
+            name=self.name + "_link_right_arm_6",
         )
-        self._ee_right.initialize(physics_sim_view=physics_sim_view)
+        self._link_right_arm_6.initialize(physics_sim_view=physics_sim_view)
 
     # ------------------------------------------------------------------
     # Rigid-prim accessors
@@ -107,12 +114,12 @@ class RBY1Robot(SingleArticulation):
         return self._base
 
     @property
-    def ee_left(self) -> SingleRigidPrim:
-        return self._ee_left
+    def link_left_arm_6(self) -> SingleRigidPrim:
+        return self._link_left_arm_6
 
     @property
-    def ee_right(self) -> SingleRigidPrim:
-        return self._ee_right
+    def link_right_arm_6(self) -> SingleRigidPrim:
+        return self._link_right_arm_6
 
 
     # ------------------------------------------------------------------
@@ -139,6 +146,20 @@ class RBY1Robot(SingleArticulation):
         self._set_float_attr(prim, f"{prefix}:staticFrictionEffort", profile["static_effort"])
         self._set_float_attr(prim, f"{prefix}:dynamicFrictionEffort", profile["dynamic_effort"])
         self._set_float_attr(prim, f"{prefix}:viscousFrictionCoefficient", viscous)
+
+    def _is_mecanum_roller_revolute_joint(self, prim) -> bool:
+        pattern = re.compile(f"^{MECANUM_ROLLER_REVOLUTE_JOINT_PATH_EXPR}$")
+        return self.robot_model == "m" and pattern.fullmatch(str(prim.GetPath())) is not None
+
+    def _configure_mecanum_roller_joint(self, prim, joint_api) -> None:
+        drive = UsdPhysics.DriveAPI.Apply(prim, "angular")
+        drive.CreateStiffnessAttr().Set(MECANUM_ROLLER_DRIVE_STIFFNESS)
+        drive.CreateDampingAttr().Set(MECANUM_ROLLER_DRIVE_DAMPING)
+        drive.CreateTargetVelocityAttr(MECANUM_ROLLER_TARGET_VELOCITY)
+
+        joint_api.CreateMaxJointVelocityAttr().Set(1000.0)
+        joint_api.CreateJointFrictionAttr().Set(0.0)
+        joint_api.CreateArmatureAttr().Set(0.005)
 
     def _apply_physics_material_to_geometry(
         self,
@@ -215,31 +236,11 @@ class RBY1Robot(SingleArticulation):
             )
 
     def set_joint_properties(self, stage, stiffness: float = 5e4, damping: float = 1e2) -> None:
-        """Apply PhysX/Drive properties to all revolute and prismatic joints in the stage."""
+        """Apply PhysX/Drive properties to all revolute joints in the stage."""
         for prim in stage.Traverse():
             type_name = prim.GetTypeName()
-            if type_name == "PhysicsPrismaticJoint":
-                self._configure_prismatic_joint(prim)
-            elif type_name == "PhysicsRevoluteJoint":
+            if type_name == "PhysicsRevoluteJoint":
                 self._configure_revolute_joint(prim)
-
-    def _configure_prismatic_joint(self, prim) -> None:
-        """Configure two-finger gripper prismatic joints."""
-        joint = UsdPhysics.PrismaticJoint(prim)
-        joint.CreateBreakForceAttr().Set(float("inf"))
-        joint.CreateBreakTorqueAttr().Set(float("inf"))
-
-        joint_api = PhysxSchema.PhysxJointAPI(prim)
-        joint_api.CreateMaxJointVelocityAttr().Set(0.04)
-        joint_api.CreateJointFrictionAttr().Set(0.0)
-        joint_api.CreateArmatureAttr().Set(0.0)
-
-        if prim.HasAPI(UsdPhysics.DriveAPI):
-            drive = UsdPhysics.DriveAPI(prim, "linear")
-            drive.CreateStiffnessAttr().Set(100.0)
-            drive.CreateDampingAttr().Set(1.0)
-            drive.CreateTargetPositionAttr(0.0)
-            drive.CreateTargetVelocityAttr(0.0)
 
     def _configure_revolute_joint(self, prim) -> None:
         joint = UsdPhysics.RevoluteJoint(prim)
@@ -252,6 +253,10 @@ class RBY1Robot(SingleArticulation):
 
         joint_api = PhysxSchema.PhysxJointAPI(prim)
         profile = get_profile_for_joint(prim.GetName())
+
+        if self._is_mecanum_roller_revolute_joint(prim):
+            self._configure_mecanum_roller_joint(prim, joint_api)
+            return
 
         if prim.HasAPI(UsdPhysics.DriveAPI):
             drive = UsdPhysics.DriveAPI(prim, "angular")
@@ -268,26 +273,10 @@ class RBY1Robot(SingleArticulation):
     # ------------------------------------------------------------------
 
     def get_joint_properties(self, stage) -> None:
-        """Print the current joint configuration for revolute and prismatic joints."""
+        """Print the current joint configuration for revolute joints."""
         for prim in stage.Traverse():
             joint_path = prim.GetPath()
             type_name = prim.GetTypeName()
-            if type_name == "PhysicsPrismaticJoint":
-                print(f"\n[INFO] Checking prismatic joint: {joint_path}")
-                joint = UsdPhysics.PrismaticJoint(prim)
-                print(f"  [Joint]    break_force        = {joint.GetBreakForceAttr().Get()}")
-                print(f"  [Joint]    break_torque       = {joint.GetBreakTorqueAttr().Get()}")
-                joint_api = PhysxSchema.PhysxJointAPI(prim)
-                print(f"  [Joint]    max_joint_velocity = {joint_api.GetMaxJointVelocityAttr().Get()}")
-                print(f"  [Joint]    joint_friction     = {joint_api.GetJointFrictionAttr().Get()}")
-                print(f"  [Joint]    armature           = {joint_api.GetArmatureAttr().Get()}")
-                if prim.HasAPI(UsdPhysics.DriveAPI):
-                    drive = UsdPhysics.DriveAPI(prim, "linear")
-                    print(f"  [Drive]    stiffness          = {drive.GetStiffnessAttr().Get()}")
-                    print(f"  [Drive]    damping            = {drive.GetDampingAttr().Get()}")
-                    print(f"  [Drive]    target_position    = {drive.GetTargetPositionAttr().Get()}")
-                    print(f"  [Drive]    target_velocity    = {drive.GetTargetVelocityAttr().Get()}")
-                continue
             if type_name != "PhysicsRevoluteJoint":
                 continue
 
@@ -295,16 +284,15 @@ class RBY1Robot(SingleArticulation):
             joint = UsdPhysics.RevoluteJoint(prim)
             print(f"  [Joint]    break_force        = {joint.GetBreakForceAttr().Get()}")
             print(f"  [Joint]    break_torque       = {joint.GetBreakTorqueAttr().Get()}")
-
             joint_api = PhysxSchema.PhysxJointAPI(prim)
             print(f"  [Joint]    max_joint_velocity = {joint_api.GetMaxJointVelocityAttr().Get()}")
             print(f"  [Joint]    joint_friction     = {joint_api.GetJointFrictionAttr().Get()}")
             print(f"  [Joint]    armature           = {joint_api.GetArmatureAttr().Get()}")
-
             axis_prefix = "physxJointAxis:angular"
             static_friction = prim.GetAttribute(f"{axis_prefix}:staticFrictionEffort")
             dynamic_friction = prim.GetAttribute(f"{axis_prefix}:dynamicFrictionEffort")
             viscous_friction = prim.GetAttribute(f"{axis_prefix}:viscousFrictionCoefficient")
+
             if static_friction and dynamic_friction and viscous_friction:
                 print(f"  [Axis]     static_friction    = {static_friction.Get()}")
                 print(f"  [Axis]     dynamic_friction   = {dynamic_friction.Get()}")
