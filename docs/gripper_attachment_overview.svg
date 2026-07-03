@@ -29,18 +29,18 @@
 
   <rect class="bg" width="1280" height="900"/>
 
-  <text class="title" x="48" y="58">RB-Y1 시뮬레이터 사용자 그리퍼 부착 구조</text>
-  <text class="subtitle" x="48" y="88">기본은 그리퍼 없는 로봇 USD를 로드하고, 옵션이 켜진 경우에만 사용자 그리퍼 USD를 reference 후 fixed joint로 부착합니다.</text>
+  <text class="title" x="48" y="58">RB-Y1 Custom Gripper Attachment</text>
+  <text class="subtitle" x="48" y="88">The simulator loads a no-gripper robot USD by default, then references user gripper USDs and mounts them with fixed joints.</text>
 
   <rect class="box-blue" x="48" y="125" width="275" height="100"/>
-  <text class="label" x="70" y="158">기본 실행</text>
+  <text class="label" x="70" y="158">Default run</text>
   <text class="mono" x="70" y="186">--no-gripper</text>
-  <text class="small" x="70" y="210">그리퍼 없는 RB-Y1 USD 로드</text>
+  <text class="small" x="70" y="210">Load the no-gripper RB-Y1 USD</text>
 
   <rect class="box-amber" x="382" y="125" width="350" height="100"/>
-  <text class="label" x="404" y="158">그리퍼 옵션</text>
+  <text class="label" x="404" y="158">Gripper option</text>
   <text class="mono" x="404" y="186">--gripper --gripper-name &lt;name&gt;</text>
-  <text class="small" x="404" y="210">assets/gripper/&lt;name&gt;/ 규칙으로 사용자 asset 선택</text>
+  <text class="small" x="404" y="210">Select assets/gripper/&lt;name&gt;/</text>
 
   <rect class="box" x="790" y="125" width="420" height="100"/>
   <text class="label" x="812" y="158">Gripper asset resolver</text>
@@ -56,7 +56,7 @@
 
   <rect class="box-gray" x="88" y="385" width="270" height="270"/>
   <text class="label" x="112" y="420">Robot base USD</text>
-  <text class="small" x="112" y="448">그리퍼 없는 RB-Y1 본체</text>
+  <text class="small" x="112" y="448">RB-Y1 body without grippers</text>
   <rect class="box" x="120" y="485" width="205" height="55"/>
   <text class="mono" x="138" y="519">link_left_arm_6</text>
   <rect class="box" x="120" y="570" width="205" height="55"/>
@@ -86,17 +86,17 @@
   <path class="arrow-dash" d="M1000 225 C1000 255 725 255 665 345"/>
 
   <rect class="box" x="870" y="285" width="340" height="470"/>
-  <text class="label" x="895" y="320">제어 책임 분리</text>
+  <text class="label" x="895" y="320">Control split</text>
 
   <rect class="box-blue" x="905" y="360" width="270" height="80"/>
   <text class="label" x="925" y="392">RBY1Task</text>
-  <text class="small" x="925" y="420">gripper joint target 적용만 담당</text>
+  <text class="small" x="925" y="420">Applies gripper joint targets</text>
 
   <path class="arrow" d="M1040 440 L1040 482"/>
 
   <rect class="box" x="905" y="482" width="270" height="80"/>
   <text class="label" x="925" y="514">BaseGripperServer</text>
-  <text class="small" x="925" y="542">joint 이름, target, state publish 인터페이스</text>
+  <text class="small" x="925" y="542">Joint names, targets, state interface</text>
 
   <path class="arrow" d="M990 562 L960 608"/>
   <path class="arrow" d="M1090 562 L1120 608"/>
@@ -104,17 +104,17 @@
   <rect class="box-green" x="875" y="608" width="155" height="86"/>
   <text class="label" x="895" y="640">RbGripper</text>
   <text class="small" x="895" y="666">UDP + Dynamixel</text>
-  <text class="small" x="895" y="686">closeness 변환</text>
+  <text class="small" x="895" y="686">closeness conversion</text>
 
   <rect class="box-amber" x="1050" y="608" width="155" height="86"/>
   <text class="label" x="1070" y="640">Custom</text>
-  <text class="small" x="1070" y="666">사용자 손 예시</text>
-  <text class="small" x="1070" y="686">프로토콜 직접 구현</text>
+  <text class="small" x="1070" y="666">User hand skeleton</text>
+  <text class="small" x="1070" y="686">Implement protocol</text>
 
   <rect class="box-gray" x="48" y="805" width="1162" height="56"/>
-  <text class="label" x="70" y="838">새 그리퍼 추가 규칙</text>
+  <text class="label" x="70" y="838">New gripper rule</text>
   <text class="mono" x="245" y="838">assets/gripper/&lt;name&gt;/gripper.json</text>
   <text class="mono" x="610" y="838">&lt;name&gt;_left.usd</text>
   <text class="mono" x="800" y="838">&lt;name&gt;_right.usd</text>
-  <text class="small" x="990" y="838">필요 시 custom_gripper server 구현</text>
+  <text class="small" x="990" y="838">Implement custom_gripper if needed</text>
 </svg>

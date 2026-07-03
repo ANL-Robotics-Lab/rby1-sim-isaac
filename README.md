@@ -70,7 +70,7 @@ The simulator loads gripper assets by folder name, so a different hand can be
 attached without modifying the base RBY1 USD. Place the hand USD files and mount
 configuration under `assets/gripper/<gripper-name>/`:
 
-<img width="1280" height="900" alt="RBY1 custom gripper attachment structure" src="docs/gripper_attachment_overview.svg" />
+<img width="1280" height="900" alt="RBY1 custom gripper attachment structure" src="docs/gripper_attachment_overview.svg?v=2" />
 
 ```text
 assets/gripper/<gripper-name>/
