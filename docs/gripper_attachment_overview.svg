@@ -116,5 +116,5 @@
   <text class="mono" x="245" y="838">assets/gripper/&lt;name&gt;/gripper.json</text>
   <text class="mono" x="610" y="838">&lt;name&gt;_left.usd</text>
   <text class="mono" x="800" y="838">&lt;name&gt;_right.usd</text>
-  <text class="small" x="990" y="838">Implement custom_gripper if needed</text>
+  <text class="small" x="990" y="838">custom_gripper server</text>
 </svg>

@@ -2,7 +2,7 @@
 
 Rainbow Robotics **RBY1** robot simulator powered by **NVIDIA Isaac Sim 5.1.0**.
 
-<img width="2490" height="1413" alt="image" src="https://github.com/user-attachments/assets/8a829550-300c-4841-b87f-12cef42ae295" />
+<img width="2267" height="1275" alt="RBY1 robot in Isaac Sim" src="docs/Isaac_sim_scene.png?v=3" />
 
 ## Requirements
 
