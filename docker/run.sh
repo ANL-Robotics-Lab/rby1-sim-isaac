@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Keep this launcher LF-terminated for Bash on Linux and WSL.
 # Run RBY1 Isaac Sim GUI container (Standalone mode)
 # - Isaac Sim GUI is displayed on the host display via X11
 # - RBY1 robot is automatically spawned and operated via internal PD control

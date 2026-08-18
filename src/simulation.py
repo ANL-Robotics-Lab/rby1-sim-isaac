@@ -404,6 +404,16 @@ def _build_argparser():
     default_model = os.environ.get("ROBOT_MODEL_NAME", "m").strip().lower() or "m"
     p.add_argument("--model", type=str.lower, choices=("m", "a"), default=default_model,
                    help="RBY1 model selection: m or a (default from ROBOT_MODEL_NAME env)")
+    default_graphics_api = "d3d12" if os.name == "nt" else "vulkan"
+    p.add_argument(
+        "--graphics-api",
+        choices=("d3d12", "vulkan"),
+        default=default_graphics_api,
+        help=(
+            "Kit graphics API (default: d3d12 on Windows, vulkan elsewhere). "
+            "The setting is applied before SimulationApp starts."
+        ),
+    )
     p.add_argument("--udp", action="store_true",
                help="Enable rby1-sdk UDP bridge")
     p.add_argument("--state-ip", default=ROBOT_STATE_HOST,
@@ -440,7 +450,19 @@ def main() -> None:
     if args.sim_gripper and not gripper_enabled:
         print("[Simulation] --sim-gripper ignored because --no-gripper is set.")
 
-    simulation_app = SimulationApp({"headless": False})
+    # The Isaac Sim 5.1 Python experience enables Vulkan explicitly. Override
+    # that experience setting before Kit starts so Windows systems with a
+    # broken Vulkan path can use the supported D3D12 backend. Linux (including
+    # the vendor Docker image) continues to use Vulkan.
+    use_vulkan = args.graphics_api == "vulkan"
+    print(f"[Simulation] Graphics API: {args.graphics_api}")
+    simulation_app = SimulationApp(
+        {
+            "headless": False,
+            "multi_gpu": False,
+            "extra_args": [f"--/app/vulkan={str(use_vulkan).lower()}"],
+        }
+    )
 
     simulation = Simulation(
         simulation_app,

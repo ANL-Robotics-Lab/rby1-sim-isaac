@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Keep this launcher LF-terminated for Bash on Linux and WSL.
 # Run RBY1 Isaac Sim GUI container (rby1-sdk UDP integration mode)
 #
 # Behavior:

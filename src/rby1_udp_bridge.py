@@ -2,12 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """UDP transport for the rby1-sdk real-time control protocol.
 
-Wraps :mod:`udp_protocol` with socket I/O and a background receive thread.
-
-The wire-format codec lives in the :mod:`udp_protocol` module, which is shipped
-as a pre-compiled extension (``udp_protocol.*.so``) and made importable via
-``PYTHONPATH`` at runtime. Its plaintext Python source is intentionally not part
-of this repository, so the codec is imported here rather than inlined.
+Wraps the RBY1 real-time wire-format codec with socket I/O and a background
+receive thread. The vendor image uses its pre-compiled :mod:`udp_protocol`
+extension. Native Windows runs use the byte-compatible pure-Python fallback.
 """
 from __future__ import annotations
 
@@ -19,10 +16,18 @@ from typing import Optional, Tuple
 
 import numpy as np
 
-from udp_protocol import (
-    build_robot_state_packet,
-    parse_robot_command_packet,
-)
+try:
+    from udp_protocol import (
+        build_robot_state_packet,
+        parse_robot_command_packet,
+    )
+except ModuleNotFoundError as exc:
+    if exc.name != "udp_protocol":
+        raise
+    from udp_protocol_portable import (
+        build_robot_state_packet,
+        parse_robot_command_packet,
+    )
 
 
 # ==========================================================
